@@ -26,10 +26,12 @@
 <div id="root"></div>
 <script type="text/babel">
 
-const SK_DAYS     = "my_days";
-const SK_MEASURES = "my_measures";
-const SK_ANALYSES = "my_analyses";
-const SK_WEIGHTS  = "my_weights";
+const SK_DAYS      = "my_days";
+const SK_MEASURES  = "my_measures";
+const SK_ANALYSES  = "my_analyses";
+const SK_WEIGHTS   = "my_weights";
+const SK_SCHEDULE  = "my_schedule";
+const SK_NUTRITION = "my_nutrition";
 
 const ZINC_START_DATE = "2026-07-04"; // цинк вводится с этой даты
 
@@ -96,7 +98,7 @@ const PERIODS = [
 
 const SK_SUPPLEMENTS = "my_supplements";
 
-const DOSE_UNITS = ["мг", "г"];
+const DOSE_UNITS = ["мг", "г", "мкг"];
 
 const SUPPLEMENT_ICONS = ["🅱️", "🔵", "⚪", "💊", "🟢", "🟡", "🟣", "🟠"];
 
@@ -198,13 +200,34 @@ function supplementStatus(supplement){
 }
 
 function formatDose(v){
-  if(!v||v.amount==null||v.amount==="") return "";
+  if(!v) return "";
+  if(v.mode==="composite"){
+    return formatIngredientsShort(v.ingredients);
+  }
+  if(v.amount==null||v.amount==="") return "";
   return `${v.amount} ${v.unit||"мг"}`;
+}
+
+function formatIngredient(ing){
+  if(!ing||ing.amount==null||ing.amount==="") return ing?.name||"";
+  return `${ing.name} ${ing.amount} ${ing.unit||"мг"}`;
+}
+
+function formatIngredientsShort(ingredients,limit){
+  const list=ingredients||[];
+  if(!list.length) return "";
+  const n=limit||2;
+  const shown=list.slice(0,n).map(formatIngredient).join(" · ");
+  const rest=list.length-n;
+  return rest>0?`${shown} · +${rest}`:shown;
 }
 
 function supplementSubtitle(supplement, dayKey){
   const v=getActiveVersion(supplement, dayKey);
   if(!v) return "";
+  if(v.mode==="composite"){
+    return [v.brand, formatIngredientsShort(v.ingredients)].filter(Boolean).join(" · ");
+  }
   return [v.brand, v.form, formatDose(v)].filter(Boolean).join(" · ");
 }
 
@@ -212,16 +235,16 @@ function defaultSupplements(){
   const start="2026-01-01";
   return [
     { id:"bComplex", label:"B-комплекс", icon:"🅱️", versions:[
-      { from:start, until:null, brand:"Thorne", form:"", amount:"", unit:"мг" },
+      { from:start, until:null, mode:"simple", brand:"Thorne", form:"", amount:"", unit:"мг", ingredients:[] },
     ]},
     { id:"magnesium", label:"Магний", icon:"🔵", versions:[
-      { from:start, until:null, brand:"Thorne", form:"бисглицинат", amount:120, unit:"мг" },
+      { from:start, until:null, mode:"simple", brand:"Thorne", form:"бисглицинат", amount:120, unit:"мг", ingredients:[] },
     ]},
     { id:"zinc", label:"Цинк", icon:"⚪", versions:[
-      { from:ZINC_START_DATE, until:null, brand:"Thorne", form:"бисглицинат", amount:15, unit:"мг" },
+      { from:ZINC_START_DATE, until:null, mode:"simple", brand:"Thorne", form:"бисглицинат", amount:15, unit:"мг", ingredients:[] },
     ]},
     { id:"creatine", label:"Креатин", icon:"💊", versions:[
-      { from:start, until:null, brand:"California Gold Nutrition", form:"моногидрат", amount:5, unit:"г" },
+      { from:start, until:null, mode:"simple", brand:"California Gold Nutrition", form:"моногидрат", amount:5, unit:"г", ingredients:[] },
     ]},
   ];
 }
@@ -261,6 +284,20 @@ const DAILY_SCHEDULE = [
     ],
   },
 ];
+
+let scheduleSeq=0;
+function newRowId(){ scheduleSeq+=1; return "row_"+Date.now()+"_"+scheduleSeq; }
+function newSectionId(){ scheduleSeq+=1; return "sec_"+Date.now()+"_"+scheduleSeq; }
+
+function defaultSchedule(){
+  return DAILY_SCHEDULE.map(group=>({
+    id: newSectionId(),
+    title: group.title,
+    rows: group.items.map(([time,text])=>({ id:newRowId(), time, text })),
+  }));
+}
+
+const SK_SCHEDULE_HISTORY = "my_schedule_history";
 
 const S = {
   app:    { minHeight:"100dvh", background:"#0d0d12", color:"#e2ddd6", maxWidth:430, margin:"0 auto", paddingBottom:80 },
@@ -761,28 +798,231 @@ function StatsTab({data,supplements}){
 }
 
 function ScheduleTab(){
-  return (
-    <div style={{padding:"16px 14px 0"}}>
-      <div style={S.title}>ГРАФИК</div>
-      <div style={S.card}>
-        <span style={S.lbl}>Прием БАДов, питание, тренировки и сон</span>
-        {DAILY_SCHEDULE.map(group=>(
-          <div key={group.title} style={{marginBottom:12}}>
-            <div style={{fontSize:14,color:"#e2ddd6",fontWeight:600,marginBottom:8}}>{group.title}</div>
-            <div style={{display:"grid",gap:5}}>
-              {group.items.map(([time,text])=>(
-                <div key={time+text} style={{display:"grid",gridTemplateColumns:"86px 1fr",gap:8,alignItems:"start",background:"#0d0d12",border:"1px solid #1e1e28",borderRadius:8,padding:"8px 10px"}}>
-                  <span style={{fontSize:12,color:"#4ade80",fontWeight:600}}>{time}</span>
-                  <span style={{fontSize:12,color:"#9ca3af",lineHeight:1.35}}>{text}</span>
+  const [sections,setSections]=React.useState(()=>load(SK_SCHEDULE,defaultSchedule()));
+  const [editMode,setEditMode]=React.useState(false);
+  const [showHistory,setShowHistory]=React.useState(false);
+  const [history,setHistory]=React.useState(()=>load(SK_SCHEDULE_HISTORY,[]));
+
+  // snapshot текущего графика сохраняется при выходе из редактирования
+  function persistEdit(next){
+    // сохраняем текущее состояние в историю перед заменой
+    const snapshot={ savedAt: new Date().toISOString(), sections };
+    const newHistory=[snapshot,...history].slice(0,30); // не больше 30 снимков
+    setHistory(newHistory);
+    save(SK_SCHEDULE_HISTORY, newHistory);
+    setSections(next);
+    save(SK_SCHEDULE, next);
+  }
+
+  function persist(next){ setSections(next); save(SK_SCHEDULE,next); }
+
+  function finishEdit(){
+    persistEdit(sections); // фиксируем историю при выходе
+    setEditMode(false);
+  }
+
+  function restoreSnapshot(snap){
+    persistEdit(snap.sections);
+    setShowHistory(false);
+  }
+
+  // --- разделы ---
+  function addSection(){
+    persist([...sections,{ id:newSectionId(), title:"Новый раздел", rows:[] }]);
+  }
+  function updateSectionTitle(id,title){
+    persist(sections.map(s=>s.id===id?{...s,title}:s));
+  }
+  function deleteSection(id){
+    persist(sections.filter(s=>s.id!==id));
+  }
+  function moveSection(id,dir){
+    const idx=sections.findIndex(s=>s.id===id);
+    const next=idx+dir;
+    if(next<0||next>=sections.length) return;
+    const arr=[...sections];
+    [arr[idx],arr[next]]=[arr[next],arr[idx]];
+    persist(arr);
+  }
+
+  // --- строки ---
+  function addRow(sectionId){
+    persist(sections.map(s=>s.id!==sectionId?s:{
+      ...s, rows:[...s.rows,{ id:newRowId(), time:"", text:"" }]
+    }));
+  }
+  function updateRow(sectionId,rowId,patch){
+    persist(sections.map(s=>s.id!==sectionId?s:{
+      ...s, rows:s.rows.map(r=>r.id===rowId?{...r,...patch}:r)
+    }));
+  }
+  function deleteRow(sectionId,rowId){
+    persist(sections.map(s=>s.id!==sectionId?s:{
+      ...s, rows:s.rows.filter(r=>r.id!==rowId)
+    }));
+  }
+  function moveRow(sectionId,rowId,dir){
+    persist(sections.map(s=>{
+      if(s.id!==sectionId) return s;
+      const idx=s.rows.findIndex(r=>r.id===rowId);
+      const next=idx+dir;
+      if(next<0||next>=s.rows.length) return s;
+      const rows=[...s.rows];
+      [rows[idx],rows[next]]=[rows[next],rows[idx]];
+      return {...s,rows};
+    }));
+  }
+
+  function formatSavedAt(iso){
+    const d=new Date(iso);
+    return d.toLocaleDateString("ru-RU",{day:"numeric",month:"long",year:"numeric"})
+      +" "+d.toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit"});
+  }
+
+  if(showHistory){
+    return (
+      <div style={{padding:"16px 14px 0"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+          <button onClick={()=>setShowHistory(false)} style={{...arrowBtn,fontSize:16}}>←</button>
+          <div style={S.title}>ИСТОРИЯ ГРАФИКОВ</div>
+        </div>
+        {history.length===0&&(
+          <div style={{...S.card,color:"#4b5563",textAlign:"center",fontSize:13}}>
+            История пуста — она появится после первого редактирования графика.
+          </div>
+        )}
+        {history.map((snap,i)=>(
+          <div key={i} style={S.card}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <div>
+                <div style={{fontSize:12,color:"#9ca3af"}}>{formatSavedAt(snap.savedAt)}</div>
+                <div style={{fontSize:10,color:"#4b5563",marginTop:2}}>
+                  {snap.sections?.length||0} разд. · {snap.sections?.reduce((sum,s)=>sum+(s.rows?.length||0),0)||0} строк
                 </div>
-              ))}
+              </div>
+              <button onClick={()=>restoreSnapshot(snap)} style={{
+                padding:"7px 12px",borderRadius:8,fontSize:12,cursor:"pointer",
+                background:"#052e16",border:"1px solid #166534",color:"#4ade80",
+              }}>Восстановить</button>
             </div>
+            {snap.sections?.map((sec,si)=>(
+              <div key={si} style={{marginBottom:6}}>
+                <div style={{fontSize:11,color:"#6b7280",fontWeight:600,marginBottom:3}}>{sec.title}</div>
+                {sec.rows?.map((row,ri)=>(
+                  <div key={ri} style={{display:"grid",gridTemplateColumns:"80px 1fr",gap:6,marginBottom:2}}>
+                    <span style={{fontSize:10,color:"#4ade80"}}>{row.time}</span>
+                    <span style={{fontSize:10,color:"#4b5563",lineHeight:1.3}}>{row.text}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
           </div>
         ))}
       </div>
+    );
+  }
+
+  return (
+    <div style={{padding:"16px 14px 0"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+        <div style={S.title}>ГРАФИК</div>
+        <div style={{display:"flex",gap:8}}>
+          {!editMode&&(
+            <button onClick={()=>setShowHistory(true)} style={{
+              padding:"8px 12px",borderRadius:8,fontSize:12,cursor:"pointer",
+              background:"#1e1e28",border:"1px solid #374151",color:"#9ca3af",
+            }}>🕐</button>
+          )}
+          <button onClick={()=>{ if(editMode) finishEdit(); else setEditMode(true); }} style={{
+            padding:"8px 16px",borderRadius:8,fontSize:12,cursor:"pointer",
+            background:editMode?"#052e16":"#1e1e28",
+            border:`1px solid ${editMode?"#166534":"#374151"}`,
+            color:editMode?"#4ade80":"#9ca3af",
+          }}>{editMode?"✓ Готово":"✏️ Редактировать"}</button>
+        </div>
+      </div>
+
+      {sections.length===0&&!editMode&&(
+        <div style={{...S.card,color:"#4b5563",textAlign:"center",fontSize:13}}>
+          График пуст. Нажмите «Редактировать», чтобы добавить разделы.
+        </div>
+      )}
+
+      {sections.map((section,si)=>(
+        <div key={section.id} style={S.card}>
+          {editMode?(
+            <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:10}}>
+              <input
+                value={section.title}
+                onChange={e=>updateSectionTitle(section.id,e.target.value)}
+                style={{...S.input,flex:1,fontWeight:600,fontSize:14,color:"#e2ddd6"}}
+              />
+              <button onClick={()=>moveSection(section.id,-1)} disabled={si===0}
+                style={{...arrowBtn,opacity:si===0?0.3:1}}>▲</button>
+              <button onClick={()=>moveSection(section.id,1)} disabled={si===sections.length-1}
+                style={{...arrowBtn,opacity:si===sections.length-1?0.3:1}}>▼</button>
+              <button onClick={()=>deleteSection(section.id)}
+                style={{...arrowBtn,color:"#f87171",border:"1px solid #991b1b",background:"#1a0000"}}>✕</button>
+            </div>
+          ):(
+            <div style={{fontSize:14,color:"#e2ddd6",fontWeight:600,marginBottom:8}}>{section.title}</div>
+          )}
+
+          <div style={{display:"grid",gap:5}}>
+            {section.rows.map((row,ri)=>(
+              editMode?(
+                <div key={row.id} style={{display:"grid",gridTemplateColumns:"90px 1fr 28px 28px 28px",gap:5,alignItems:"center"}}>
+                  <input
+                    value={row.time}
+                    onChange={e=>updateRow(section.id,row.id,{time:e.target.value})}
+                    style={{...S.input,padding:"7px 8px",fontSize:12,color:"#4ade80"}}
+                    placeholder="9:00"
+                  />
+                  <input
+                    value={row.text}
+                    onChange={e=>updateRow(section.id,row.id,{text:e.target.value})}
+                    style={{...S.input,padding:"7px 8px",fontSize:12}}
+                    placeholder="Описание"
+                  />
+                  <button onClick={()=>moveRow(section.id,row.id,-1)} disabled={ri===0}
+                    style={{...arrowBtn,fontSize:11,opacity:ri===0?0.3:1}}>▲</button>
+                  <button onClick={()=>moveRow(section.id,row.id,1)} disabled={ri===section.rows.length-1}
+                    style={{...arrowBtn,fontSize:11,opacity:ri===section.rows.length-1?0.3:1}}>▼</button>
+                  <button onClick={()=>deleteRow(section.id,row.id)}
+                    style={{...arrowBtn,color:"#f87171",border:"1px solid #991b1b",background:"#1a0000",fontSize:11}}>✕</button>
+                </div>
+              ):(
+                <div key={row.id} style={{display:"grid",gridTemplateColumns:"86px 1fr",gap:8,alignItems:"start",background:"#0d0d12",border:"1px solid #1e1e28",borderRadius:8,padding:"8px 10px"}}>
+                  <span style={{fontSize:12,color:"#4ade80",fontWeight:600}}>{row.time}</span>
+                  <span style={{fontSize:12,color:"#9ca3af",lineHeight:1.35}}>{row.text}</span>
+                </div>
+              )
+            ))}
+          </div>
+
+          {editMode&&(
+            <button onClick={()=>addRow(section.id)} style={{
+              marginTop:8,width:"100%",padding:"7px 4px",borderRadius:8,
+              background:"#0d0d12",border:"1px dashed #1e1e28",
+              color:"#6b7280",fontSize:12,cursor:"pointer",
+            }}>+ Добавить строку</button>
+          )}
+        </div>
+      ))}
+
+      {editMode&&(
+        <button onClick={addSection} style={{...S.saveBtn,marginBottom:14}}>
+          + Добавить раздел
+        </button>
+      )}
     </div>
   );
 }
+
+const arrowBtn={
+  padding:"0 6px",height:32,borderRadius:6,background:"#1e1e28",
+  border:"1px solid #374151",color:"#9ca3af",fontSize:13,cursor:"pointer",
+};
 
 function downloadFile(name,content,type){
   const blob=new Blob([content],{type});
@@ -950,12 +1190,63 @@ function DataTab({daysData,setDaysData}){
 
 function emptyVersionForm(prevVersion){
   return {
+    mode: prevVersion?.mode || "simple",
     brand: prevVersion?.brand || "",
     form: prevVersion?.form || "",
     amount: prevVersion?.amount ?? "",
     unit: prevVersion?.unit || "мг",
+    ingredients: prevVersion?.ingredients?.length ? prevVersion.ingredients.map(i=>({...i})) : [],
     from: todayKey(),
   };
+}
+
+let ingredientSeq=0;
+function newIngredientId(){ ingredientSeq+=1; return "ing_"+Date.now()+"_"+ingredientSeq; }
+
+function ModeToggle({mode,onChange}){
+  return (
+    <div style={{display:"flex",background:"#0d0d12",borderRadius:8,padding:3,marginBottom:10,border:"1px solid #1e1e28"}}>
+      {[{v:"simple",label:"Простая доза"},{v:"composite",label:"Состав (комплекс)"}].map(opt=>(
+        <button key={opt.v} onClick={()=>onChange(opt.v)} style={{
+          flex:1,padding:"8px 4px",background:mode===opt.v?"#1e1e28":"none",
+          border:"none",borderRadius:6,color:mode===opt.v?"#4ade80":"#4b5563",
+          fontSize:12,cursor:"pointer",
+        }}>{opt.label}</button>
+      ))}
+    </div>
+  );
+}
+
+function IngredientsEditor({ingredients,onChange}){
+  function update(id,patch){ onChange(ingredients.map(i=>i.id===id?{...i,...patch}:i)); }
+  function remove(id){ onChange(ingredients.filter(i=>i.id!==id)); }
+  function add(){ onChange([...ingredients, {id:newIngredientId(),name:"",amount:"",unit:"мг"}]); }
+
+  return (
+    <div style={{marginBottom:8}}>
+      <label style={{fontSize:11,color:"#4b5563",display:"block",marginBottom:6}}>Состав</label>
+      {ingredients.map(ing=>(
+        <div key={ing.id} style={{display:"grid",gridTemplateColumns:"1fr 70px 60px 28px",gap:6,marginBottom:6,alignItems:"center"}}>
+          <input value={ing.name} onChange={e=>update(ing.id,{name:e.target.value})} style={{...S.input,padding:"8px 10px",fontSize:12}} placeholder="B12 (метилкобаламин)"/>
+          <input type="number" step="0.01" value={ing.amount} onChange={e=>update(ing.id,{amount:e.target.value})} style={{...S.input,padding:"8px 8px",fontSize:12}} placeholder="500"/>
+          <select value={ing.unit} onChange={e=>update(ing.id,{unit:e.target.value})} style={{...S.input,padding:"8px 4px",fontSize:12}}>
+            {DOSE_UNITS.map(u=><option key={u} value={u}>{u}</option>)}
+          </select>
+          <button onClick={()=>remove(ing.id)} style={{background:"#1a0000",border:"1px solid #991b1b",borderRadius:6,color:"#f87171",fontSize:14,cursor:"pointer",height:34}}>×</button>
+        </div>
+      ))}
+      <button onClick={add} style={{width:"100%",padding:"8px 4px",borderRadius:8,background:"#0d0d12",border:"1px dashed #1e1e28",color:"#6b7280",fontSize:12,cursor:"pointer"}}>+ Добавить компонент</button>
+    </div>
+  );
+}
+
+function buildVersionFromForm(form){
+  const base={ from:form.from, until:null, mode:form.mode, brand:form.brand };
+  if(form.mode==="composite"){
+    return {...base, form:"", amount:"", unit:"мг",
+      ingredients: form.ingredients.filter(i=>i.name.trim()).map(i=>({...i, amount: i.amount===""?"":parseFloat(i.amount)})) };
+  }
+  return {...base, form:form.form, amount:form.amount===""?"":parseFloat(form.amount), unit:form.unit, ingredients:[] };
 }
 
 function SupplementCard({supplement, onUpdate, onArchive}){
@@ -977,7 +1268,7 @@ function SupplementCard({supplement, onUpdate, onArchive}){
     const kept=supplement.versions
       .filter(v=>v.from<form.from)
       .map(v=>v.until==null?{...v, until: dayBefore(form.from)}:v);
-    const versions=[...kept, { from:form.from, until:null, brand:form.brand, form:form.form, amount:form.amount===""?"":parseFloat(form.amount), unit:form.unit }];
+    const versions=[...kept, buildVersionFromForm(form)];
     onUpdate({...supplement, versions});
     setEditing(false);
   }
@@ -990,7 +1281,7 @@ function SupplementCard({supplement, onUpdate, onArchive}){
 
   function resume(){
     const todayK=todayKey();
-    const versions=[...supplement.versions, { from:todayK, until:null, brand:cv?.brand||"", form:cv?.form||"", amount:cv?.amount??"", unit:cv?.unit||"мг" }];
+    const versions=[...supplement.versions, { from:todayK, until:null, mode:cv?.mode||"simple", brand:cv?.brand||"", form:cv?.form||"", amount:cv?.amount??"", unit:cv?.unit||"мг", ingredients:cv?.ingredients?.map(i=>({...i}))||[] }];
     onUpdate({...supplement, versions});
   }
 
@@ -1002,7 +1293,12 @@ function SupplementCard({supplement, onUpdate, onArchive}){
         <span style={{fontSize:22}}>{supplement.icon}</span>
         <div style={{flex:1}}>
           <div style={{fontSize:15,color:"#e2ddd6",fontWeight:600}}>{supplement.label}</div>
-          <div style={{fontSize:11,color:"#6b7280",marginTop:1}}>{cv?[cv.brand,cv.form,formatDose(cv)].filter(Boolean).join(" · "):"—"}</div>
+          <div style={{fontSize:11,color:"#6b7280",marginTop:1}}>
+            {cv?(cv.mode==="composite"
+              ?[cv.brand,formatIngredientsShort(cv.ingredients)].filter(Boolean).join(" · ")
+              :[cv.brand,cv.form,formatDose(cv)].filter(Boolean).join(" · ")
+            ):"—"}
+          </div>
         </div>
         <span style={{fontSize:10,color:statusColor,border:`1px solid ${statusColor}`,borderRadius:6,padding:"3px 8px"}}>{statusLabel}</span>
         <span style={{fontSize:14,color:"#4b5563",marginLeft:4}}>{expanded?"▴":"▾"}</span>
@@ -1022,19 +1318,32 @@ function SupplementCard({supplement, onUpdate, onArchive}){
             </div>
           ):(
             <div style={{marginBottom:14}}>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
-                <div><label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Бренд</label><input value={form.brand} onChange={e=>setForm(f=>({...f,brand:e.target.value}))} style={S.input}/></div>
-                <div><label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Форма</label><input value={form.form} onChange={e=>setForm(f=>({...f,form:e.target.value}))} style={S.input} placeholder="бисглицинат"/></div>
+              <ModeToggle mode={form.mode} onChange={m=>setForm(f=>({...f,mode:m}))}/>
+              <div style={{marginBottom:8}}>
+                <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Бренд</label>
+                <input value={form.brand} onChange={e=>setForm(f=>({...f,brand:e.target.value}))} style={S.input}/>
               </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
-                <div style={{gridColumn:"span 2"}}><label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Доза</label><input type="number" step="0.1" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} style={S.input}/></div>
-                <div>
-                  <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Ед.</label>
-                  <select value={form.unit} onChange={e=>setForm(f=>({...f,unit:e.target.value}))} style={{...S.input,padding:"10px 6px"}}>
-                    {DOSE_UNITS.map(u=><option key={u} value={u}>{u}</option>)}
-                  </select>
-                </div>
-              </div>
+
+              {form.mode==="composite"?(
+                <IngredientsEditor ingredients={form.ingredients} onChange={ings=>setForm(f=>({...f,ingredients:ings}))}/>
+              ):(
+                <>
+                  <div style={{marginBottom:8}}>
+                    <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Форма</label>
+                    <input value={form.form} onChange={e=>setForm(f=>({...f,form:e.target.value}))} style={S.input} placeholder="бисглицинат"/>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
+                    <div style={{gridColumn:"span 2"}}><label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Доза</label><input type="number" step="0.1" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} style={S.input}/></div>
+                    <div>
+                      <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Ед.</label>
+                      <select value={form.unit} onChange={e=>setForm(f=>({...f,unit:e.target.value}))} style={{...S.input,padding:"10px 6px"}}>
+                        {DOSE_UNITS.map(u=><option key={u} value={u}>{u}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </>
+              )}
+
               <div style={{marginBottom:10}}>
                 <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Действует с</label>
                 <input type="date" value={form.from} onChange={e=>setForm(f=>({...f,from:e.target.value}))} style={S.input}/>
@@ -1050,10 +1359,20 @@ function SupplementCard({supplement, onUpdate, onArchive}){
           <span style={{...S.lbl,marginBottom:6}}>История версий</span>
           {sortedVersions.map((v,i)=>(
             <div key={i} style={{padding:"8px 0",borderBottom:i<sortedVersions.length-1?"1px solid #1e1e28":"none"}}>
-              <div style={{display:"flex",justifyContent:"space-between"}}>
-                <span style={{fontSize:12,color:"#9ca3af"}}>{[v.brand,v.form,formatDose(v)].filter(Boolean).join(" · ")||"—"}</span>
+              <div style={{fontSize:12,color:"#9ca3af"}}>
+                {v.mode==="composite"
+                  ? [v.brand, formatIngredientsShort(v.ingredients,3)].filter(Boolean).join(" · ") || "—"
+                  : [v.brand,v.form,formatDose(v)].filter(Boolean).join(" · ") || "—"
+                }
               </div>
-              <div style={{fontSize:10,color:"#4b5563",marginTop:2}}>
+              {v.mode==="composite"&&v.ingredients?.length>0&&(
+                <div style={{marginTop:4}}>
+                  {v.ingredients.map((ing,j)=>(
+                    <div key={j} style={{fontSize:10,color:"#4b5563"}}>{formatIngredient(ing)}</div>
+                  ))}
+                </div>
+              )}
+              <div style={{fontSize:10,color:"#374151",marginTop:2}}>
                 {parseKey(v.from).toLocaleDateString("ru-RU",{day:"numeric",month:"short",year:"numeric"})}
                 {" → "}
                 {v.until?parseKey(v.until).toLocaleDateString("ru-RU",{day:"numeric",month:"short",year:"numeric"}):"по сей день"}
@@ -1075,18 +1394,22 @@ function dayBefore(dateKey){
 function NewSupplementForm({onCreate, onCancel}){
   const [label,setLabel]=React.useState("");
   const [icon,setIcon]=React.useState(SUPPLEMENT_ICONS[0]);
+  const [mode,setMode]=React.useState("simple");
   const [brand,setBrand]=React.useState("");
   const [form,setForm]=React.useState("");
   const [amount,setAmount]=React.useState("");
   const [unit,setUnit]=React.useState("мг");
+  const [ingredients,setIngredients]=React.useState([]);
   const [from,setFrom]=React.useState(todayKey());
 
   function submit(){
     if(!label.trim()) return;
-    const id="supp_"+Date.now();
+    const versionForm={mode,brand,form,amount,unit,ingredients,from};
     onCreate({
-      id, label:label.trim(), icon,
-      versions:[{ from, until:null, brand, form, amount:amount===""?"":parseFloat(amount), unit }],
+      id:"supp_"+Date.now(),
+      label:label.trim(),
+      icon,
+      versions:[buildVersionFromForm(versionForm)],
     });
   }
 
@@ -1097,7 +1420,7 @@ function NewSupplementForm({onCreate, onCancel}){
         <label style={{fontSize:11,color:"#4b5563",display:"block",marginBottom:4}}>Название</label>
         <input value={label} onChange={e=>setLabel(e.target.value)} style={S.input} placeholder="Омега-3"/>
       </div>
-      <div style={{marginBottom:8}}>
+      <div style={{marginBottom:10}}>
         <label style={{fontSize:11,color:"#4b5563",display:"block",marginBottom:4}}>Иконка</label>
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
           {SUPPLEMENT_ICONS.map(ic=>(
@@ -1109,19 +1432,33 @@ function NewSupplementForm({onCreate, onCancel}){
           ))}
         </div>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
-        <div><label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Бренд</label><input value={brand} onChange={e=>setBrand(e.target.value)} style={S.input}/></div>
-        <div><label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Форма</label><input value={form} onChange={e=>setForm(e.target.value)} style={S.input}/></div>
+      <ModeToggle mode={mode} onChange={setMode}/>
+      <div style={{marginBottom:8}}>
+        <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Бренд</label>
+        <input value={brand} onChange={e=>setBrand(e.target.value)} style={S.input}/>
       </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
-        <div style={{gridColumn:"span 2"}}><label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Доза</label><input type="number" step="0.1" value={amount} onChange={e=>setAmount(e.target.value)} style={S.input}/></div>
-        <div>
-          <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Ед.</label>
-          <select value={unit} onChange={e=>setUnit(e.target.value)} style={{...S.input,padding:"10px 6px"}}>
-            {DOSE_UNITS.map(u=><option key={u} value={u}>{u}</option>)}
-          </select>
-        </div>
-      </div>
+      {mode==="composite"?(
+        <IngredientsEditor ingredients={ingredients} onChange={setIngredients}/>
+      ):(
+        <>
+          <div style={{marginBottom:8}}>
+            <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Форма</label>
+            <input value={form} onChange={e=>setForm(e.target.value)} style={S.input} placeholder="бисглицинат"/>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
+            <div style={{gridColumn:"span 2"}}>
+              <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Доза</label>
+              <input type="number" step="0.1" value={amount} onChange={e=>setAmount(e.target.value)} style={S.input}/>
+            </div>
+            <div>
+              <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Ед.</label>
+              <select value={unit} onChange={e=>setUnit(e.target.value)} style={{...S.input,padding:"10px 6px"}}>
+                {DOSE_UNITS.map(u=><option key={u} value={u}>{u}</option>)}
+              </select>
+            </div>
+          </div>
+        </>
+      )}
       <div style={{marginBottom:12}}>
         <label style={{fontSize:11,color:"#4b5563",display:"block",marginBottom:4}}>Начать с</label>
         <input type="date" value={from} onChange={e=>setFrom(e.target.value)} style={S.input}/>
@@ -1187,11 +1524,201 @@ function SupplementsTab({supplements,setSupplements}){
   );
 }
 
+let mealSeq=0;
+function newMealId(){ mealSeq+=1; return "meal_"+Date.now()+"_"+mealSeq; }
+
+const MACRO_FIELDS=[
+  {id:"kcal",    label:"Калории",   unit:"ккал", color:"#f59e0b"},
+  {id:"protein", label:"Белки",     unit:"г",    color:"#4ade80"},
+  {id:"fat",     label:"Жиры",      unit:"г",    color:"#f87171"},
+  {id:"carbs",   label:"Углеводы",  unit:"г",    color:"#818cf8"},
+  {id:"fiber",   label:"Клетчатка", unit:"г",    color:"#34d399"},
+];
+
+const EMPTY_MEAL_FORM={name:"",kcal:"",protein:"",fat:"",carbs:"",fiber:""};
+
+function NutritionTab(){
+  const [dayOffset,setDayOffset]=React.useState(0);
+  const key=offsetKey(dayOffset);
+  const [data,setData]=React.useState(()=>load(SK_NUTRITION,{}));
+  const [editing,setEditing]=React.useState(null);
+  const [form,setForm]=React.useState(EMPTY_MEAL_FORM);
+
+  const dayData=data[key]||{meals:[]};
+  const meals=dayData.meals||[];
+
+  // редактирование разрешено только для сегодня и вчера
+  const canEdit=dayOffset>=-1;
+
+  function persist(next){ setData(next); save(SK_NUTRITION,next); }
+  function setDayMeals(nextMeals){ persist({...data,[key]:{...dayData,meals:nextMeals}}); }
+
+  function openNew(){
+    setForm(EMPTY_MEAL_FORM);
+    setEditing("new");
+  }
+
+  function openEdit(meal){
+    setForm({
+      name:    meal.name,
+      kcal:    meal.kcal??'',
+      protein: meal.protein??'',
+      fat:     meal.fat??'',
+      carbs:   meal.carbs??'',
+      fiber:   meal.fiber??'',
+    });
+    setEditing(meal.id);
+  }
+
+  function saveForm(){
+    if(!form.name.trim()) return;
+    const entry={
+      id:      editing==="new"?newMealId():editing,
+      name:    form.name.trim(),
+      kcal:    form.kcal===''?null:parseFloat(form.kcal),
+      protein: form.protein===''?null:parseFloat(form.protein),
+      fat:     form.fat===''?null:parseFloat(form.fat),
+      carbs:   form.carbs===''?null:parseFloat(form.carbs),
+      fiber:   form.fiber===''?null:parseFloat(form.fiber),
+    };
+    if(editing==="new"){
+      setDayMeals([...meals,entry]);
+    } else {
+      setDayMeals(meals.map(m=>m.id===editing?entry:m));
+    }
+    setEditing(null);
+  }
+
+  function deleteMeal(id){ setDayMeals(meals.filter(m=>m.id!==id)); }
+
+  const fmt=v=>{
+    if(v==null||v===0) return "0";
+    return v%1===0?String(v):v.toFixed(1);
+  };
+
+  const totals=MACRO_FIELDS.reduce((acc,f)=>{
+    acc[f.id]=meals.reduce((s,m)=>s+(m[f.id]??0),0);
+    return acc;
+  },{});
+
+  const viewedDate=parseKey(key);
+  const dateLabel=dayOffset===0?"Сегодня":dayOffset===-1?"Вчера":viewedDate.toLocaleDateString("ru-RU",{day:"numeric",month:"long"});
+
+  // найдём самый ранний день с данными для ограничения навигации
+  const earliestKey=Object.keys(data).sort()[0];
+
+  return (
+    <div style={{padding:"16px 14px 0"}}>
+      <div style={S.title}>ПИТАНИЕ</div>
+
+      {/* навигация по дням */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+        <button
+          onClick={()=>{ setDayOffset(o=>o-1); setEditing(null); }}
+          disabled={earliestKey&&key<=earliestKey}
+          style={{...arrowBtn,fontSize:16,opacity:(earliestKey&&key<=earliestKey)?0.3:1}}>←</button>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:13,color:"#9ca3af"}}>{dateLabel}</div>
+          <div style={{fontSize:10,color:"#374151"}}>{viewedDate.toLocaleDateString("ru-RU",{weekday:"long"})}</div>
+        </div>
+        <button
+          onClick={()=>{ setDayOffset(o=>Math.min(0,o+1)); setEditing(null); }}
+          disabled={dayOffset===0}
+          style={{...arrowBtn,fontSize:16,opacity:dayOffset===0?0.3:1}}>→</button>
+      </div>
+
+      {/* плашка "только просмотр" для старых дней */}
+      {!canEdit&&(
+        <div style={{background:"#0d0d12",border:"1px solid #1e1e28",borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:11,color:"#4b5563",textAlign:"center"}}>
+          Редактирование доступно только для сегодня и вчера
+        </div>
+      )}
+
+      {/* итого за день */}
+      {meals.length>0&&(
+        <>
+          <div style={{fontSize:10,color:"#4b5563",marginBottom:6,fontWeight:600,letterSpacing:"0.05em"}}>ИТОГО ЗА ДЕНЬ</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:12}}>
+            {MACRO_FIELDS.map(f=>(
+              <div key={f.id} style={{background:"#0d0d12",border:"1px solid #1e1e28",borderRadius:8,padding:"8px 6px",textAlign:"center"}}>
+                <div style={{fontSize:15,fontWeight:700,color:f.color}}>{fmt(totals[f.id])}</div>
+                <div style={{fontSize:9,color:"#4b5563",marginTop:1}}>{f.unit}</div>
+                <div style={{fontSize:9,color:"#374151"}}>{f.label}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* список приёмов */}
+      {meals.length===0&&(
+        <div style={{...S.card,color:"#4b5563",textAlign:"center",fontSize:13}}>
+          Нет данных за этот день
+        </div>
+      )}
+      {meals.map(meal=>(
+        <div key={meal.id} style={S.card}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div style={{fontSize:14,color:"#e2ddd6",fontWeight:600,flex:1}}>{meal.name}</div>
+            {canEdit&&(
+              <div style={{display:"flex",gap:6,marginLeft:8}}>
+                <button onClick={()=>openEdit(meal)} style={{...arrowBtn,fontSize:12}}>✏️</button>
+                <button onClick={()=>deleteMeal(meal.id)} style={{...arrowBtn,color:"#f87171",border:"1px solid #991b1b",background:"#1a0000",fontSize:12}}>✕</button>
+              </div>
+            )}
+          </div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
+            {MACRO_FIELDS.map(f=>meal[f.id]!=null&&(
+              <span key={f.id} style={{fontSize:11,color:f.color,background:"#0d0d12",border:"1px solid #1e1e28",borderRadius:6,padding:"3px 8px"}}>
+                {fmt(meal[f.id])} {f.unit} {f.label.toLowerCase()}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* форма добавления/редактирования */}
+      {editing&&canEdit&&(
+        <div style={S.card}>
+          <span style={S.lbl}>{editing==="new"?"Новый приём пищи":"Редактировать"}</span>
+          <div style={{marginBottom:10}}>
+            <label style={{fontSize:11,color:"#4b5563",display:"block",marginBottom:3}}>Название</label>
+            <input value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}
+              style={S.input} placeholder="Завтрак / Обед / Ужин..."/>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+            {MACRO_FIELDS.map(f=>(
+              <div key={f.id}>
+                <label style={{fontSize:10,color:f.color,display:"block",marginBottom:3}}>{f.label}, {f.unit}</label>
+                <input type="number" step="0.1" value={form[f.id]}
+                  onChange={e=>setForm(fm=>({...fm,[f.id]:e.target.value}))}
+                  style={S.input} placeholder="0"/>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={saveForm} style={{...S.saveBtn,flex:1}}>Сохранить</button>
+            <button onClick={()=>setEditing(null)} style={{flex:1,padding:12,borderRadius:8,background:"#0d0d12",border:"1px solid #1e1e28",color:"#9ca3af",fontSize:14,cursor:"pointer"}}>Отмена</button>
+          </div>
+        </div>
+      )}
+
+      {!editing&&canEdit&&(
+        <button onClick={openNew} style={{...S.saveBtn,marginBottom:14}}>
+          + Добавить приём пищи
+        </button>
+      )}
+    </div>
+  );
+}
+
+
 const NAV=[
   {id:0,icon:"◉",label:"Сегодня"},
   {id:1,icon:"☰",label:"График"},
   {id:2,icon:"▦",label:"Календарь"},
   {id:3,icon:"↗",label:"Статистика"},
+  {id:6,icon:"🍽",label:"Питание"},
   {id:5,icon:"💊",label:"Добавки"},
   {id:4,icon:"≡",label:"Данные"},
 ];
@@ -1240,6 +1767,17 @@ function runMigrationV3Once(){
 }
 runMigrationV3Once();
 
+const SK_MIGRATED_V4 = "my_migrated_v4";
+
+function runMigrationV4Once(){
+  if(load(SK_MIGRATED_V4,false)) return;
+  if(!load(SK_SCHEDULE,null)){
+    save(SK_SCHEDULE, defaultSchedule());
+  }
+  save(SK_MIGRATED_V4,true);
+}
+runMigrationV4Once();
+
 function App(){
   const [tab,setTab]=React.useState(0);
   const [data,setData]=React.useState(()=>load(SK_DAYS,{}));
@@ -1253,6 +1791,7 @@ function App(){
       {tab===3&&<StatsTab data={data} supplements={supplements}/>}
       {tab===4&&<DataTab daysData={data} setDaysData={setData}/>}
       {tab===5&&<SupplementsTab supplements={supplements} setSupplements={setSupplements}/>}
+      {tab===6&&<NutritionTab/>}
       <nav style={S.nav}>
         {NAV.map(n=>(
           <button key={n.id} onClick={()=>setTab(n.id)} style={S.navBtn(tab===n.id)}>
