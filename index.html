@@ -5,12 +5,30 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Трекер">
+<meta name="theme-color" content="#0d0d12">
 <title>Мой трекер</title>
+<link rel="manifest" href="data:application/json,{&quot;name&quot;:&quot;Мой трекер&quot;,&quot;short_name&quot;:&quot;Трекер&quot;,&quot;start_url&quot;:&quot;.&quot;,&quot;display&quot;:&quot;standalone&quot;,&quot;background_color&quot;:&quot;#0d0d12&quot;,&quot;theme_color&quot;:&quot;#0d0d12&quot;,&quot;icons&quot;:[{&quot;src&quot;:&quot;data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230d0d12'/><text y='.9em' font-size='80'>◉</text></svg>&quot;,&quot;sizes&quot;:&quot;any&quot;,&quot;type&quot;:&quot;image/svg+xml&quot;}]}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script>
+if('serviceWorker' in navigator){
+  const sw=`
+self.addEventListener('install',e=>{ self.skipWaiting(); });
+self.addEventListener('activate',e=>{ e.waitUntil(clients.claim()); });
+self.addEventListener('fetch',e=>{
+  if(e.request.method!=='GET') return;
+  e.respondWith(fetch(e.request).catch(()=>caches.match(e.request)));
+});
+`;
+  const blob=new Blob([sw],{type:'application/javascript'});
+  const url=URL.createObjectURL(blob);
+  navigator.serviceWorker.register(url).catch(()=>{});
+}
+</script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
   body{background:#0d0d12;color:#e2ddd6;font-family:'DM Sans',system-ui,sans-serif;font-size:14px}
@@ -32,13 +50,44 @@ const SK_ANALYSES  = "my_analyses";
 const SK_WEIGHTS   = "my_weights";
 const SK_SCHEDULE  = "my_schedule";
 const SK_NUTRITION = "my_nutrition";
+const SK_HABITS    = "my_habits";
+const SK_DAY_FIELDS = "my_day_fields";
 
-const ZINC_START_DATE = "2026-07-04"; // цинк вводится с этой даты
-
-// Привычки, не связанные с добавками (добавки живут в реестре SUPPLEMENTS — см. ниже)
-const STATIC_HABITS = [
-  { id: "noAlcohol",      label: "Без алкоголя",      icon: "🚫" },
+const DAY_FIELD_TYPES = [
+  { id:"yesno",   label:"Да / Нет",            hint:"отёчность, головная боль" },
+  { id:"number",  label:"Число",               hint:"часы сна, шаги, вес" },
+  { id:"scale",   label:"Шкала 1–5",           hint:"настроение, энергия" },
+  { id:"choice",  label:"Выбор из вариантов",  hint:"как быстрые углеводы" },
 ];
+
+let dayFieldSeq=0;
+function newDayFieldId(){ dayFieldSeq+=1; return "df_"+Date.now()+"_"+dayFieldSeq; }
+
+function defaultDayFields(){
+  return [
+    { id:"mood",      label:"Настроение",         type:"scale",  icon:"😊", archivedAt:null, options:[] },
+    { id:"sleepQuality", label:"Качество сна",    type:"scale",  icon:"💤", archivedAt:null, options:[] },
+    { id:"sleepHours",label:"Часы сна",           type:"number", icon:"🕐", archivedAt:null, options:[], unit:"ч" },
+    { id:"wakeups",   label:"Ночные пробуждения", type:"number", icon:"🌙", archivedAt:null, options:[], unit:"раз" },
+    { id:"erection",  label:"Эрекция",            type:"scale",  icon:"⚡", archivedAt:null, options:[] },
+    { id:"fastCarbs", label:"Быстрые углеводы",   type:"choice", icon:"🍭", archivedAt:null,
+      options:[
+        {id:"fc0",label:"Не ел",   color:"#4ade80"},
+        {id:"fc1",label:"Немного", color:"#eab308"},
+        {id:"fc2",label:"Срыв",    color:"#f87171"},
+      ]
+    },
+  ];
+}
+
+
+const HABIT_ICONS = ["🚫","😴","💪","🏃","📵","🧘","📚","💊","🥗","💧","🎯","✅","🔒","⚡","🌿"];
+
+function defaultHabits(){
+  return [
+    { id:"noAlcohol", label:"Без алкоголя", icon:"🚫", archivedAt:null },
+  ];
+}
 
 const FAST_CARBS = [
   { v: 0, label: "Не ел",   color: "#4ade80", bg: "#052e16", border: "#166534" },
@@ -127,9 +176,10 @@ function getMonthKey(k){ return k.slice(0,7); }
 function getMonthLabel(mk){ const [y,m]=mk.split("-"); return new Date(+y,+m-1,1).toLocaleDateString("ru-RU",{month:"long",year:"numeric"}); }
 
 // Объединённый список «привычек» для подсчёта и отображения: статичные + все добавки из реестра
-function getEffectiveHabits(supplements){
+function getEffectiveHabits(supplements, habits){
+  const activeHabits=(habits||[]).filter(h=>!h.archivedAt).map(h=>({ id:h.id, label:h.label, icon:h.icon, isSupplement:false, supplement:null }));
   const suppHabits=(supplements||[]).map(s=>({ id:s.id, label:s.label, icon:s.icon, isSupplement:true, supplement:s }));
-  return [...suppHabits, ...STATIC_HABITS];
+  return [...suppHabits, ...activeHabits];
 }
 
 function isHabitLocked(habit, dayKey){
@@ -139,19 +189,16 @@ function isHabitLocked(habit, dayKey){
   return false;
 }
 
-function getMaxScore(dayKey, supplements){
-  const habits=getEffectiveHabits(supplements);
-  const activeHabits=habits.filter(h=>!isHabitLocked(h,dayKey)).length;
-  return activeHabits+1; // +1 за "без быстрых углеводов"
+function getMaxScore(dayKey, supplements, habits){
+  const eh=getEffectiveHabits(supplements,habits);
+  return eh.filter(h=>!isHabitLocked(h,dayKey)).length;
 }
 
-function getDayScore(day,dayKey,supplements){
+function getDayScore(day,dayKey,supplements,habits){
   if(!day) return 0;
   const k=dayKey||"0000-00-00";
-  const habits=getEffectiveHabits(supplements);
-  const positives=habits.filter(h=>!isHabitLocked(h,k)&&day.habits?.[h.id]).length;
-  const noBadCarbs=(day.fastCarbs==null||day.fastCarbs===0)?1:0;
-  return positives+noBadCarbs;
+  const eh=getEffectiveHabits(supplements,habits);
+  return eh.filter(h=>!isHabitLocked(h,k)&&day.habits?.[h.id]).length;
 }
 
 function scoreColor(score,max){
@@ -191,8 +238,9 @@ function getCurrentVersion(supplement){
 }
 
 function supplementStatus(supplement){
+  if(supplement?.archived) return "archived";
   const cv=getCurrentVersion(supplement);
-  if(!cv) return "archived"; // нет версий вовсе — не должно происходить, но на всякий
+  if(!cv) return "archived";
   if(cv.until==null){
     return cv.from>todayKey() ? "scheduled" : "active";
   }
@@ -239,9 +287,6 @@ function defaultSupplements(){
     ]},
     { id:"magnesium", label:"Магний", icon:"🔵", versions:[
       { from:start, until:null, mode:"simple", brand:"Thorne", form:"бисглицинат", amount:120, unit:"мг", ingredients:[] },
-    ]},
-    { id:"zinc", label:"Цинк", icon:"⚪", versions:[
-      { from:ZINC_START_DATE, until:null, mode:"simple", brand:"Thorne", form:"бисглицинат", amount:15, unit:"мг", ingredients:[] },
     ]},
     { id:"creatine", label:"Креатин", icon:"💊", versions:[
       { from:start, until:null, mode:"simple", brand:"California Gold Nutrition", form:"моногидрат", amount:5, unit:"г", ingredients:[] },
@@ -310,6 +355,11 @@ const S = {
   saveBtn:{ width:"100%", background:"#052e16", border:"1px solid #166534", borderRadius:8, color:"#4ade80", fontSize:14, padding:12, cursor:"pointer" },
 };
 
+const arrowBtn={
+  padding:"0 6px",height:32,borderRadius:6,background:"#1e1e28",
+  border:"1px solid #374151",color:"#9ca3af",fontSize:13,cursor:"pointer",
+};
+
 function PeriodSelector({value,onChange}){
   return (
     <div style={{display:"flex",background:"#13131a",borderRadius:8,padding:3,marginBottom:14}}>
@@ -324,7 +374,87 @@ function PeriodSelector({value,onChange}){
   );
 }
 
-function TodayTab({data,setData,supplements}){
+function DayFieldInput({field, value, onChange}){
+  const SCALE_COLORS=["","#f87171","#fb923c","#eab308","#84cc16","#4ade80"];
+
+  if(field.type==="yesno"){
+    const opts=[{v:true,label:"Да",color:"#f87171",bg:"#1a0000",border:"#991b1b"},{v:false,label:"Нет",color:"#4ade80",bg:"#052e16",border:"#166534"}];
+    return (
+      <div style={S.card}>
+        <span style={S.lbl}>{field.icon} {field.label}</span>
+        <div style={{display:"flex",gap:6}}>
+          {opts.map(o=>(
+            <button key={String(o.v)} onClick={()=>onChange(value===o.v?null:o.v)} style={{
+              flex:1,padding:"10px 4px",borderRadius:8,cursor:"pointer",fontSize:13,transition:"all 0.12s",
+              background:value===o.v?o.bg:"#0d0d12",
+              border:`1px solid ${value===o.v?o.border:"#1e1e28"}`,
+              color:value===o.v?o.color:"#4b5563",
+            }}>{o.label}</button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if(field.type==="number"){
+    return (
+      <div style={S.card}>
+        <span style={S.lbl}>{field.icon} {field.label}</span>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <input type="number" step="0.1" value={value??""} onChange={e=>onChange(e.target.value===''?null:parseFloat(e.target.value))}
+            style={{...S.input,flex:1,fontSize:20,textAlign:"center",fontFamily:"'Bebas Neue',sans-serif"}}
+            placeholder="—"/>
+          {field.unit&&<span style={{fontSize:13,color:"#4b5563",flexShrink:0}}>{field.unit}</span>}
+        </div>
+      </div>
+    );
+  }
+
+  if(field.type==="scale"){
+    return (
+      <div style={S.card}>
+        <span style={S.lbl}>{field.icon} {field.label}</span>
+        <div style={{display:"flex",gap:6}}>
+          {[1,2,3,4,5].map(n=>(
+            <button key={n} onClick={()=>onChange(value===n?null:n)} style={{
+              flex:1,padding:"10px 4px",borderRadius:8,cursor:"pointer",
+              fontFamily:"'Bebas Neue',sans-serif",fontSize:22,transition:"all 0.12s",
+              background:value===n?"#1a1a1a":"#0d0d12",
+              border:`1px solid ${value===n?SCALE_COLORS[n]:"#1e1e28"}`,
+              color:value===n?SCALE_COLORS[n]:"#374151",
+            }}>{n}</button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if(field.type==="choice"){
+    const opts=field.options||[];
+    return (
+      <div style={S.card}>
+        <span style={S.lbl}>{field.icon} {field.label}</span>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {opts.map(o=>{
+            const sel=value===o.id;
+            return (
+              <button key={o.id} onClick={()=>onChange(sel?null:o.id)} style={{
+                flex:"1 1 auto",padding:"10px 6px",borderRadius:8,cursor:"pointer",fontSize:12,transition:"all 0.12s",
+                background:sel?"#1a1a1a":"#0d0d12",
+                border:`1px solid ${sel?o.color:"#1e1e28"}`,
+                color:sel?o.color:"#4b5563",
+              }}>{o.label}</button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function TodayTab({data,setData,supplements,habits,dayFields}){
   const [dayOffset,setDayOffset]=React.useState(0);
   const key=offsetKey(dayOffset);
   const day=data[key]||{};
@@ -341,18 +471,15 @@ function TodayTab({data,setData,supplements}){
   const todayWorkout=!!day.habits?.workout;
   function toggleWorkout(){ set({habits:{...day.habits,workout:!todayWorkout}}); }
 
-  const maxScore=getMaxScore(key,supplements);
-  const score=getDayScore(day,key,supplements);
-  const pct=Math.round((score/maxScore)*100);
+  const maxScore=getMaxScore(key,supplements,habits);
+  const score=getDayScore(day,key,supplements,habits);
+  const pct=maxScore>0?Math.round((score/maxScore)*100):0;
 
   return (
-    <div style={{padding:"16px 14px 0"}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-        <div>
-          <div style={S.title}>{dayTitle}</div>
-          <div style={{fontSize:12,color:"#4b5563",marginTop:-10}}>
-            {viewedDate.toLocaleDateString("ru-RU",{weekday:"long",day:"numeric",month:"long"})}
-          </div>
+    <div style={{padding:"12px 14px 0"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <div style={{fontSize:13,color:"#6b7280"}}>
+          {viewedDate.toLocaleDateString("ru-RU",{weekday:"long",day:"numeric",month:"long"})}
         </div>
         <div style={{textAlign:"center"}}>
           <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:28,color:pct>=80?"#4ade80":pct>=50?"#eab308":"#f87171"}}>{pct}%</div>
@@ -398,7 +525,7 @@ function TodayTab({data,setData,supplements}){
 
       <div style={S.card}>
         <span style={S.lbl}>Привычки</span>
-        {getEffectiveHabits(supplements).filter(h=>{
+        {getEffectiveHabits(supplements,habits).filter(h=>{
           if(!h.isSupplement) return true;
           const locked=isHabitLocked(h,key);
           if(!locked) return true;
@@ -429,119 +556,14 @@ function TodayTab({data,setData,supplements}){
           );
         })}
         <div style={{marginTop:10}}>
-          <span style={{...S.lbl,marginBottom:6}}>🍭 Быстрые углеводы</span>
-          <div style={{display:"flex",gap:6}}>
-            {FAST_CARBS.map(fc=>(
-              <button key={fc.v} onClick={()=>set({fastCarbs:fc.v})} style={{
-                flex:1,padding:"10px 4px",
-                background:day.fastCarbs===fc.v?fc.bg:"#0d0d12",
-                border:`1px solid ${day.fastCarbs===fc.v?fc.border:"#1e1e28"}`,
-                borderRadius:8,color:day.fastCarbs===fc.v?fc.color:"#4b5563",
-                fontSize:12,cursor:"pointer",transition:"all 0.12s",
-              }}>{fc.label}</button>
-            ))}
-          </div>
+          {/* Поля типа "choice" из dayFields (бывшие Быстрые углеводы и т.д.) */}
         </div>
       </div>
 
-      <div style={S.card}>
-        <span style={S.lbl}>Сон</span>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-          <div>
-            <label style={{fontSize:11,color:"#4b5563",display:"block",marginBottom:4}}>Лёг</label>
-            <input type="time" value={day.sleepTime||""} onChange={e=>set({sleepTime:e.target.value})} style={S.input}/>
-          </div>
-          <div>
-            <label style={{fontSize:11,color:"#4b5563",display:"block",marginBottom:4}}>Встал</label>
-            <input type="time" value={day.wakeTime||""} onChange={e=>set({wakeTime:e.target.value})} style={S.input}/>
-          </div>
-        </div>
-        <span style={{...S.lbl,marginBottom:6}}>Качество сна</span>
-        <div style={{display:"flex",gap:6,marginBottom:12}}>
-          {SLEEP_QUALITY.map(sq=>(
-            <button key={sq.v} onClick={()=>set({sleepQuality:sq.v})} style={{
-              flex:1,padding:"10px 4px",
-              background:day.sleepQuality===sq.v?sq.bg:"#0d0d12",
-              border:`1px solid ${day.sleepQuality===sq.v?sq.border:"#1e1e28"}`,
-              borderRadius:8,color:day.sleepQuality===sq.v?sq.color:"#4b5563",
-              fontSize:12,cursor:"pointer",transition:"all 0.12s",
-            }}>{sq.label}</button>
-          ))}
-        </div>
-        <span style={{...S.lbl,marginBottom:6}}>Ночные пробуждения</span>
-        <div style={{display:"flex",gap:6}}>
-          {[{v:false,label:"Не было",color:"#4ade80",bg:"#052e16",border:"#166534"},
-            {v:true, label:"Были",   color:"#f87171",bg:"#1a0000",border:"#991b1b"}].map(opt=>(
-            <button key={String(opt.v)} onClick={()=>set({nightWaking:opt.v})} style={{
-              flex:1,padding:"10px 4px",
-              background:day.nightWaking===opt.v?opt.bg:"#0d0d12",
-              border:`1px solid ${day.nightWaking===opt.v?opt.border:"#1e1e28"}`,
-              borderRadius:8,color:day.nightWaking===opt.v?opt.color:"#4b5563",
-              fontSize:13,cursor:"pointer",transition:"all 0.12s",
-            }}>{opt.label}</button>
-          ))}
-        </div>
-      </div>
-
-      <div style={S.card}>
-        <span style={S.lbl}>Настроение</span>
-        <div style={{display:"flex",gap:6,marginBottom:14}}>
-          {MOOD.map(m=>(
-            <button key={m.v} onClick={()=>set({mood:m.v})} style={{
-              flex:1,padding:"10px 4px",
-              background:day.mood===m.v?"#1a2e1a":"#0d0d12",
-              border:`1px solid ${day.mood===m.v?"#4ade80":"#1e1e28"}`,
-              borderRadius:8,cursor:"pointer",
-              display:"flex",flexDirection:"column",alignItems:"center",gap:3,
-            }}>
-              <span style={{fontSize:20}}>{m.l}</span>
-              <span style={{fontSize:8,color:day.mood===m.v?"#4ade80":"#374151"}}>{m.label}</span>
-            </button>
-          ))}
-        </div>
-
-        <span style={S.lbl}>Энергия</span>
-        <div style={{display:"flex",gap:6,marginBottom:14}}>
-          {[1,2,3,4,5].map(n=>(
-            <button key={n} onClick={()=>set({energy:n})} style={{
-              flex:1,padding:"10px 4px",
-              background:day.energy===n?"#1a1a2e":"#0d0d12",
-              border:`1px solid ${day.energy===n?"#6366f1":"#1e1e28"}`,
-              borderRadius:8,color:day.energy===n?"#818cf8":"#4b5563",
-              fontFamily:"'Bebas Neue',sans-serif",fontSize:20,cursor:"pointer",
-            }}>{n}</button>
-          ))}
-        </div>
-
-        <span style={S.lbl}>Утренняя эрекция</span>
-        <div style={{display:"flex",gap:6,marginBottom:14}}>
-          {ERECTION.map(e=>(
-            <button key={e.v} onClick={()=>set({erection:e.v})} style={{
-              flex:1,padding:"10px 4px",
-              background:day.erection===e.v?"#1a1a1a":"#0d0d12",
-              border:`1px solid ${day.erection===e.v?"#9ca3af":"#1e1e28"}`,
-              borderRadius:8,cursor:"pointer",
-              display:"flex",flexDirection:"column",alignItems:"center",gap:3,
-            }}>
-              <span style={{fontSize:18,color:day.erection===e.v?"#e2ddd6":"#374151"}}>{e.l}</span>
-              <span style={{fontSize:8,color:day.erection===e.v?"#9ca3af":"#374151"}}>{e.label}</span>
-            </button>
-          ))}
-        </div>
-
-        <span style={S.lbl}>Тяга к сладкому</span>
-        <div style={{display:"flex",gap:6,marginBottom:14}}>
-          {CRAVING.map(c=>(
-            <button key={c.v} onClick={()=>set({craving:c.v})} style={{
-              flex:1,padding:"10px 4px",
-              background:day.craving===c.v?c.bg:"#0d0d12",
-              border:`1px solid ${day.craving===c.v?c.border:"#1e1e28"}`,
-              borderRadius:8,color:day.craving===c.v?c.color:"#4b5563",
-              fontSize:12,cursor:"pointer",transition:"all 0.12s",
-            }}>{c.label}</button>
-          ))}
-        </div>
-      </div>
+      {/* Кастомные поля дня */}
+      {(dayFields||[]).filter(f=>!f.archivedAt).map(field=>(
+        <DayFieldInput key={field.id} field={field} value={day[field.id]} onChange={v=>set({[field.id]:v})}/>
+      ))}
 
       <div style={S.card}>
         <span style={S.lbl}>Заметки дня</span>
@@ -553,7 +575,7 @@ function TodayTab({data,setData,supplements}){
   );
 }
 
-function CalendarTab({data,supplements}){
+function CalendarTab({data,supplements,habits}){
   const today=todayKey();
   const now=new Date();
   const [viewYear,setViewYear]=React.useState(now.getFullYear());
@@ -574,7 +596,7 @@ function CalendarTab({data,supplements}){
 
   return (
     <div style={{padding:"16px 14px 0"}}>
-      <div style={S.title}>КАЛЕНДАРЬ</div>
+      
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
         <button onClick={prev} style={{background:"none",border:"none",color:"#4b5563",fontSize:22,cursor:"pointer",padding:"4px 8px"}}>‹</button>
         <div style={{textAlign:"center"}}>
@@ -596,8 +618,8 @@ function CalendarTab({data,supplements}){
           const d=i+1;
           const k=`${viewYear}-${String(viewMonth+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
           const day=data[k];
-          const score=getDayScore(day,k,supplements);
-          const dayMax=getMaxScore(k,supplements);
+          const score=getDayScore(day,k,supplements,habits);
+          const dayMax=getMaxScore(k,supplements,habits);
           const isToday=k===today;
           const isSel=k===selected;
           return (
@@ -633,13 +655,13 @@ function CalendarTab({data,supplements}){
             <span style={{color:"#4ade80",fontSize:14,fontWeight:600}}>
               {parseKey(selected).toLocaleDateString("ru-RU",{weekday:"long",day:"numeric",month:"long"})}
             </span>
-            <span style={{fontSize:11,color:"#4b5563"}}>{getDayScore(selectedDay,selected,supplements)}/{getMaxScore(selected,supplements)}</span>
+            <span style={{fontSize:11,color:"#4b5563"}}>{getDayScore(selectedDay,selected,supplements,habits)}/{getMaxScore(selected,supplements,habits)}</span>
           </div>
           {selectedDay?(
             <>
               <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:10}}>
                 {selectedDay.habits?.workout&&<span style={{padding:"4px 8px",borderRadius:6,fontSize:11,background:"#052e16",color:"#4ade80",border:"1px solid #166534"}}>🏋️ Тренировка</span>}
-                {getEffectiveHabits(supplements).filter(h=>!isHabitLocked(h,selected)).map(h=>{
+                {getEffectiveHabits(supplements,habits).filter(h=>!isHabitLocked(h,selected)).map(h=>{
                   const done=!!selectedDay.habits?.[h.id];
                   const subtitle=h.isSupplement?supplementSubtitle(h.supplement,selected):"";
                   return <span key={h.id} style={{padding:"4px 8px",borderRadius:6,fontSize:11,background:done?"#052e16":"#1a1a1a",color:done?"#4ade80":"#4b5563",border:`1px solid ${done?"#166534":"#1e1e28"}`}}>{h.icon} {h.label}{subtitle&&done?` (${subtitle})`:""}</span>;
@@ -670,7 +692,7 @@ function CalendarTab({data,supplements}){
   );
 }
 
-function StatsTab({data,supplements}){
+function StatsTab({data,supplements,habits}){
   const [period,setPeriod]=React.useState("30");
   const days=React.useMemo(()=>getDaysRange(period,data),[period,data]);
   const filled=days.filter(k=>data[k]);
@@ -682,7 +704,7 @@ function StatsTab({data,supplements}){
       const d=new Date(); d.setDate(d.getDate()-i);
       const k=toKey(d);
       const day=data[k];
-      if(day&&getDayScore(day,k,supplements)>=Math.floor(getMaxScore(k,supplements)*0.7)) s++;
+      if(day&&getDayScore(day,k,supplements,habits)>=Math.floor(getMaxScore(k,supplements,habits)*0.7)) s++;
       else break;
     }
     return s;
@@ -696,7 +718,7 @@ function StatsTab({data,supplements}){
   const erDays=days.filter(k=>data[k]?.erection!=null);
   const avgEr=erDays.length?(erDays.reduce((s,k)=>s+data[k].erection,0)/erDays.length).toFixed(1):null;
   const goodSleepCount=days.filter(k=>data[k]?.sleepQuality===3).length;
-  const habitStats=getEffectiveHabits(supplements).map(h=>{
+  const habitStats=getEffectiveHabits(supplements,habits).map(h=>{
     const eligibleDays=days.filter(k=>!isHabitLocked(h,k));
     const count=eligibleDays.filter(k=>data[k]?.habits?.[h.id]).length;
     return {...h,pct:eligibleDays.length?Math.round((count/eligibleDays.length)*100):0};
@@ -712,7 +734,7 @@ function StatsTab({data,supplements}){
 
   return (
     <div style={{padding:"16px 14px 0"}}>
-      <div style={S.title}>СТАТИСТИКА</div>
+      
       <PeriodSelector value={period} onChange={setPeriod}/>
       <div style={{fontSize:10,color:"#4b5563",marginBottom:14}}>{totalDays} дней с данными за выбранный период</div>
 
@@ -787,7 +809,7 @@ function StatsTab({data,supplements}){
         <span style={S.lbl}>Активность — 90 дней</span>
         <div style={{display:"grid",gridTemplateColumns:"repeat(15,1fr)",gap:3}}>
           {heatDays.map(k=>(
-            <div key={k} style={{aspectRatio:"1",borderRadius:3,background:scoreColor(getDayScore(data[k],k,supplements),getMaxScore(k,supplements)),border:k===todayKey()?"1px solid #4ade80":"none",position:"relative"}}>
+            <div key={k} style={{aspectRatio:"1",borderRadius:3,background:scoreColor(getDayScore(data[k],k,supplements,habits),getMaxScore(k,supplements,habits)),border:k===todayKey()?"1px solid #4ade80":"none",position:"relative"}}>
               {data[k]?.habits?.workout&&<div style={{position:"absolute",top:1,right:1,width:3,height:3,borderRadius:"50%",background:"#4ade80"}}/>}
             </div>
           ))}
@@ -924,8 +946,7 @@ function ScheduleTab(){
 
   return (
     <div style={{padding:"16px 14px 0"}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-        <div style={S.title}>ГРАФИК</div>
+      <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",marginBottom:14}}>
         <div style={{display:"flex",gap:8}}>
           {!editMode&&(
             <button onClick={()=>setShowHistory(true)} style={{
@@ -1019,11 +1040,6 @@ function ScheduleTab(){
   );
 }
 
-const arrowBtn={
-  padding:"0 6px",height:32,borderRadius:6,background:"#1e1e28",
-  border:"1px solid #374151",color:"#9ca3af",fontSize:13,cursor:"pointer",
-};
-
 function downloadFile(name,content,type){
   const blob=new Blob([content],{type});
   const url=URL.createObjectURL(blob);
@@ -1052,8 +1068,6 @@ function DataTab({daysData,setDaysData}){
   const [measures,setMeasures]=React.useState(()=>load(SK_MEASURES,[]));
   const [analyses,setAnalyses]=React.useState(()=>load(SK_ANALYSES,[]));
   const [weights,setWeights]=React.useState(()=>load(SK_WEIGHTS,[]));
-  const [backupStatus,setBackupStatus]=React.useState("");
-  const importRef=React.useRef(null);
   const emptyM={date:todayStr,...Object.fromEntries(MEASURE_FIELDS.map(f=>[f.key,""]))};
   const emptyA={date:todayStr,...Object.fromEntries(ANALYSIS_FIELDS.map(f=>[f.key,""]))};
   const [mForm,setMForm]=React.useState(emptyM);
@@ -1064,66 +1078,10 @@ function DataTab({daysData,setDaysData}){
   function saveAnalysis(){ const n=[...analyses,{...aForm}]; setAnalyses(n); save(SK_ANALYSES,n); }
   function saveWeight(){ if(!wForm.value) return; const n=[...weights,{...wForm}]; setWeights(n); save(SK_WEIGHTS,n); setWForm({date:todayStr,value:""}); }
 
-  function exportBackup(){
-    const payload={
-      backupVersion:1,
-      app:"my-tracker",
-      exportedAt:new Date().toISOString(),
-      data:{
-        days:daysData,
-        weights,
-        measures,
-        analyses,
-      },
-    };
-    downloadFile(`my-tracker-backup-${todayStr}.json`,JSON.stringify(payload,null,2),"application/json;charset=utf-8");
-    setBackupStatus("Бэкап скачан");
-  }
-
-  function importBackup(e){
-    const file=e.target.files?.[0];
-    if(!file) return;
-    const reader=new FileReader();
-    reader.onload=()=>{
-      try{
-        const imported=normalizeBackup(JSON.parse(reader.result));
-        const ok=window.confirm("Заменить текущие данные данными из бэкапа? Перед импортом лучше скачать свежий бэкап.");
-        if(!ok) return;
-        setDaysData(imported.days);
-        setWeights(imported.weights);
-        setMeasures(imported.measures);
-        setAnalyses(imported.analyses);
-        save(SK_DAYS,imported.days);
-        save(SK_WEIGHTS,imported.weights);
-        save(SK_MEASURES,imported.measures);
-        save(SK_ANALYSES,imported.analyses);
-        setBackupStatus("Бэкап загружен");
-      }catch{
-        setBackupStatus("Не удалось прочитать файл");
-      }finally{
-        e.target.value="";
-      }
-    };
-    reader.readAsText(file);
-  }
-
   const lastA=analyses.slice(-1)[0];
 
   return (
-    <div style={{padding:"16px 14px 0"}}>
-      <div style={S.title}>ДАННЫЕ</div>
-      <div style={S.card}>
-        <span style={S.lbl}>Бэкап</span>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-          <button onClick={exportBackup} style={S.saveBtn}>Скачать бэкап</button>
-          <button onClick={()=>importRef.current?.click()} style={{...S.saveBtn,background:"#0d0d12",border:"1px solid #1e1e28",color:"#e2ddd6"}}>Загрузить бэкап</button>
-        </div>
-        <input ref={importRef} type="file" accept="application/json,.json" onChange={importBackup} style={{display:"none"}}/>
-        <div style={{fontSize:10,color:"#4b5563",marginTop:8}}>
-          Сохраняет все записи, заметки, вес, замеры и анализы.
-        </div>
-        {backupStatus&&<div style={{fontSize:11,color:"#4ade80",marginTop:8}}>{backupStatus}</div>}
-      </div>
+    <div style={{padding:"12px 14px 0"}}>
       <div style={{display:"flex",background:"#13131a",borderRadius:8,padding:3,marginBottom:14}}>
         {["Вес","Замеры","Анализы"].map((t,i)=>(
           <button key={t} onClick={()=>setTab(i)} style={{flex:1,padding:"8px 4px",background:tab===i?"#1e1e28":"none",border:"none",borderRadius:6,color:tab===i?"#e2ddd6":"#4b5563",fontSize:13,cursor:"pointer"}}>{t}</button>
@@ -1232,7 +1190,7 @@ function IngredientsEditor({ingredients,onChange}){
           <select value={ing.unit} onChange={e=>update(ing.id,{unit:e.target.value})} style={{...S.input,padding:"8px 4px",fontSize:12}}>
             {DOSE_UNITS.map(u=><option key={u} value={u}>{u}</option>)}
           </select>
-          <button onClick={()=>remove(ing.id)} style={{background:"#1a0000",border:"1px solid #991b1b",borderRadius:6,color:"#f87171",fontSize:14,cursor:"pointer",height:34}}>×</button>
+          <button onClick={()=>remove(ing.id)} style={{background:"#1a0000",border:"1px solid #991b1b",borderRadius:6,color:"#f87171",fontSize:14,cursor:"pointer",height:34}}>x</button>
         </div>
       ))}
       <button onClick={add} style={{width:"100%",padding:"8px 4px",borderRadius:8,background:"#0d0d12",border:"1px dashed #1e1e28",color:"#6b7280",fontSize:12,cursor:"pointer"}}>+ Добавить компонент</button>
@@ -1249,7 +1207,7 @@ function buildVersionFromForm(form){
   return {...base, form:form.form, amount:form.amount===""?"":parseFloat(form.amount), unit:form.unit, ingredients:[] };
 }
 
-function SupplementCard({supplement, onUpdate, onArchive}){
+function SupplementCard({supplement, onUpdate, onArchive, onUnarchive}){
   const [expanded,setExpanded]=React.useState(false);
   const [editing,setEditing]=React.useState(false); // режим "изменить параметры" / "новая версия"
   const status=supplementStatus(supplement);
@@ -1274,14 +1232,21 @@ function SupplementCard({supplement, onUpdate, onArchive}){
   }
 
   function pause(){
-    const todayK=todayKey();
-    const versions=supplement.versions.map(v=>v.until==null?{...v, until: todayK}:v);
+    // закрываем вчерашним днём — сегодня добавка уже не активна
+    const yesterday=dayBefore(todayKey());
+    const versions=supplement.versions.map(v=>v.until==null?{...v, until: yesterday}:v);
     onUpdate({...supplement, versions});
   }
 
   function resume(){
+    // открываем с сегодняшнего дня
     const todayK=todayKey();
-    const versions=[...supplement.versions, { from:todayK, until:null, mode:cv?.mode||"simple", brand:cv?.brand||"", form:cv?.form||"", amount:cv?.amount??"", unit:cv?.unit||"мг", ingredients:cv?.ingredients?.map(i=>({...i}))||[] }];
+    const versions=[...supplement.versions, {
+      from:todayK, until:null,
+      mode:cv?.mode||"simple", brand:cv?.brand||"", form:cv?.form||"",
+      amount:cv?.amount??"", unit:cv?.unit||"мг",
+      ingredients:cv?.ingredients?.map(i=>({...i}))||[]
+    }];
     onUpdate({...supplement, versions});
   }
 
@@ -1308,13 +1273,21 @@ function SupplementCard({supplement, onUpdate, onArchive}){
         <div style={{marginTop:14}}>
           {!editing?(
             <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>
-              <button onClick={()=>setEditing(true)} style={{...S.saveBtn,flex:"1 1 auto",padding:"9px 12px",fontSize:12}}>Изменить параметры</button>
-              {status==="active"||status==="scheduled" ? (
-                <button onClick={pause} style={{flex:"1 1 auto",padding:"9px 12px",borderRadius:8,background:"#1a1200",border:"1px solid #854d0e",color:"#eab308",fontSize:12,cursor:"pointer"}}>Приостановить</button>
-              ) : (
-                <button onClick={resume} style={{flex:"1 1 auto",padding:"9px 12px",borderRadius:8,background:"#052e16",border:"1px solid #166534",color:"#4ade80",fontSize:12,cursor:"pointer"}}>Возобновить</button>
+              {status!=="archived"&&(
+                <button onClick={()=>setEditing(true)} style={{...S.saveBtn,flex:"1 1 auto",padding:"9px 12px",fontSize:12}}>Изменить параметры</button>
               )}
-              <button onClick={()=>onArchive(supplement.id)} style={{flex:"1 1 auto",padding:"9px 12px",borderRadius:8,background:"#1a0000",border:"1px solid #991b1b",color:"#f87171",fontSize:12,cursor:"pointer"}}>Архивировать</button>
+              {(status==="active"||status==="scheduled")&&(
+                <button onClick={pause} style={{flex:"1 1 auto",padding:"9px 12px",borderRadius:8,background:"#1a1200",border:"1px solid #854d0e",color:"#eab308",fontSize:12,cursor:"pointer"}}>⏸ Приостановить</button>
+              )}
+              {status==="paused"&&(
+                <button onClick={resume} style={{flex:"1 1 auto",padding:"9px 12px",borderRadius:8,background:"#052e16",border:"1px solid #166534",color:"#4ade80",fontSize:12,cursor:"pointer"}}>▶ Возобновить</button>
+              )}
+              {status!=="archived"&&(
+                <button onClick={()=>onArchive(supplement.id)} style={{flex:"1 1 auto",padding:"9px 12px",borderRadius:8,background:"#1a0000",border:"1px solid #991b1b",color:"#f87171",fontSize:12,cursor:"pointer"}}>🗄 Архивировать</button>
+              )}
+              {status==="archived"&&(
+                <button onClick={()=>onUnarchive(supplement.id)} style={{flex:"1 1 auto",padding:"9px 12px",borderRadius:8,background:"#052e16",border:"1px solid #166534",color:"#4ade80",fontSize:12,cursor:"pointer"}}>↩ Разархивировать</button>
+              )}
             </div>
           ):(
             <div style={{marginBottom:14}}>
@@ -1480,11 +1453,21 @@ function SupplementsTab({supplements,setSupplements}){
     persist(supplements.map(s=>s.id===updated.id?updated:s));
   }
   function archiveOne(id){
+    const yesterday=dayBefore(todayKey());
+    persist(supplements.map(s=>{
+      if(s.id!==id) return s;
+      const versions=s.versions.map(v=>v.until==null?{...v, until: yesterday}:v);
+      return {...s, archived:true, versions};
+    }));
+  }
+  function unarchiveOne(id){
+    // сбрасываем флаг и открываем новую версию с сегодня
     const todayK=todayKey();
     persist(supplements.map(s=>{
       if(s.id!==id) return s;
-      const versions=s.versions.map(v=>v.until==null?{...v, until: todayK}:v);
-      return {...s, versions};
+      const cv=getCurrentVersion(s);
+      const newVersion={ from:todayK, until:null, mode:cv?.mode||"simple", brand:cv?.brand||"", form:cv?.form||"", amount:cv?.amount??"", unit:cv?.unit||"мг", ingredients:cv?.ingredients?.map(i=>({...i}))||[] };
+      return {...s, archived:false, versions:[...s.versions, newVersion]};
     }));
   }
   function createOne(supp){
@@ -1497,13 +1480,13 @@ function SupplementsTab({supplements,setSupplements}){
 
   return (
     <div style={{padding:"16px 14px 0"}}>
-      <div style={S.title}>ДОБАВКИ</div>
+      
       <div style={{fontSize:11,color:"#4b5563",marginBottom:14}}>
         Бренд, форма и доза сохраняются по датам — прошлая история не меняется, даже если вы поменяете препарат сейчас.
       </div>
 
       {active.map(s=>(
-        <SupplementCard key={s.id} supplement={s} onUpdate={updateOne} onArchive={archiveOne}/>
+        <SupplementCard key={s.id} supplement={s} onUpdate={updateOne} onArchive={archiveOne} onUnarchive={unarchiveOne}/>
       ))}
 
       {showNew ? (
@@ -1516,7 +1499,7 @@ function SupplementsTab({supplements,setSupplements}){
         <>
           <span style={{...S.lbl,marginTop:6}}>Архивные</span>
           {archivedOnly.map(s=>(
-            <SupplementCard key={s.id} supplement={s} onUpdate={updateOne} onArchive={archiveOne}/>
+            <SupplementCard key={s.id} supplement={s} onUpdate={updateOne} onArchive={archiveOne} onUnarchive={unarchiveOne}/>
           ))}
         </>
       )}
@@ -1609,7 +1592,7 @@ function NutritionTab(){
 
   return (
     <div style={{padding:"16px 14px 0"}}>
-      <div style={S.title}>ПИТАНИЕ</div>
+      
 
       {/* навигация по дням */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
@@ -1713,13 +1696,376 @@ function NutritionTab(){
 }
 
 
+// ─── НАСТРОЙКИ ────────────────────────────────────────────────────────────────
+
+let habitIdSeq=0;
+function newHabitId(){ habitIdSeq+=1; return "habit_"+Date.now()+"_"+habitIdSeq; }
+
+const FIELD_COLORS=["#4ade80","#f87171","#eab308","#818cf8","#34d399","#f59e0b","#9ca3af"];
+
+function FieldForm({form, setForm, onSave, onCancel, saveLabel}){
+  const [optLabel,setOptLabel]=React.useState("");
+  const [optColor,setOptColor]=React.useState("#4ade80");
+
+  function addOption(){
+    if(!optLabel.trim()) return;
+    const opt={id:"opt_"+Date.now(),label:optLabel.trim(),color:optColor};
+    setForm(f=>({...f,options:[...(f.options||[]),opt]}));
+    setOptLabel("");
+  }
+  function removeOption(id){ setForm(f=>({...f,options:f.options.filter(o=>o.id!==id)})); }
+
+  return (
+    <div style={S.card}>
+      <div style={{marginBottom:8}}>
+        <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Название поля</label>
+        <input value={form.label} onChange={e=>setForm(f=>({...f,label:e.target.value}))} style={S.input} placeholder="Отёчность"/>
+      </div>
+      <div style={{marginBottom:8}}>
+        <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:4}}>Тип</label>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+          {DAY_FIELD_TYPES.map(t=>(
+            <button key={t.id} onClick={()=>setForm(f=>({...f,type:t.id,options:t.id===f.type?f.options:[]}))} style={{
+              padding:"8px 6px",borderRadius:8,cursor:"pointer",textAlign:"left",
+              background:form.type===t.id?"#1e1e28":"#0d0d12",
+              border:`1px solid ${form.type===t.id?"#4ade80":"#1e1e28"}`,
+              color:form.type===t.id?"#4ade80":"#6b7280",
+            }}>
+              <div style={{fontSize:12,fontWeight:600}}>{t.label}</div>
+              <div style={{fontSize:10,color:"#374151",marginTop:2}}>{t.hint}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"80px 1fr",gap:8,marginBottom:8}}>
+        <div>
+          <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Иконка</label>
+          <input value={form.icon} onChange={e=>setForm(f=>({...f,icon:e.target.value}))} style={{...S.input,textAlign:"center",fontSize:18}}/>
+        </div>
+        {form.type==="number"&&(
+          <div>
+            <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:3}}>Единица (ч, раз, кг...)</label>
+            <input value={form.unit||""} onChange={e=>setForm(f=>({...f,unit:e.target.value}))} style={S.input} placeholder="ч"/>
+          </div>
+        )}
+      </div>
+      {form.type==="choice"&&(
+        <div style={{marginBottom:8}}>
+          <label style={{fontSize:10,color:"#4b5563",display:"block",marginBottom:6}}>Варианты выбора</label>
+          {(form.options||[]).map(o=>(
+            <div key={o.id} style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+              <span style={{width:10,height:10,borderRadius:"50%",background:o.color,flexShrink:0,display:"inline-block"}}/>
+              <span style={{flex:1,fontSize:12,color:"#9ca3af"}}>{o.label}</span>
+              <button onClick={()=>removeOption(o.id)} style={{...arrowBtn,fontSize:11,color:"#f87171",border:"1px solid #991b1b",background:"#1a0000"}}>✕</button>
+            </div>
+          ))}
+          <div style={{display:"flex",gap:6,marginTop:6,alignItems:"center"}}>
+            <input value={optLabel} onChange={e=>setOptLabel(e.target.value)}
+              style={{...S.input,flex:1,padding:"7px 8px",fontSize:12}} placeholder="Вариант"/>
+            <div style={{display:"flex",gap:4}}>
+              {FIELD_COLORS.map(c=>(
+                <button key={c} onClick={()=>setOptColor(c)} style={{
+                  width:18,height:18,borderRadius:"50%",background:c,
+                  border:`2px solid ${optColor===c?"#fff":"transparent"}`,
+                  cursor:"pointer",padding:0,flexShrink:0,
+                }}/>
+              ))}
+            </div>
+            <button onClick={addOption} style={{...arrowBtn,fontSize:13}}>+</button>
+          </div>
+        </div>
+      )}
+      <div style={{display:"flex",gap:8,marginTop:4}}>
+        <button onClick={onSave} style={{...S.saveBtn,flex:1,padding:"9px 0",fontSize:12}}>{saveLabel}</button>
+        <button onClick={onCancel} style={{flex:1,padding:"9px 0",borderRadius:8,background:"#0d0d12",border:"1px solid #1e1e28",color:"#9ca3af",fontSize:12,cursor:"pointer"}}>Отмена</button>
+      </div>
+    </div>
+  );
+}
+
+function DayFieldsSettings({dayFields, setDayFields}){
+  const [showNew,setShowNew]=React.useState(false);
+  const [newForm,setNewForm]=React.useState({label:"",type:"yesno",icon:"📊",unit:"",options:[]});
+  const [editId,setEditId]=React.useState(null);
+  const [editForm,setEditForm]=React.useState(null);
+
+  function persist(next){ setDayFields(next); save(SK_DAY_FIELDS,next); }
+  function addField(){ if(!newForm.label.trim()) return; persist([...dayFields,{id:newDayFieldId(),...newForm,label:newForm.label.trim(),archivedAt:null}]); setNewForm({label:"",type:"yesno",icon:"📊",unit:"",options:[]}); setShowNew(false); }
+  function archiveField(id){ persist(dayFields.map(f=>f.id===id?{...f,archivedAt:todayKey()}:f)); }
+  function restoreField(id){ persist(dayFields.map(f=>f.id===id?{...f,archivedAt:null}:f)); }
+  function startEdit(f){ setEditId(f.id); setEditForm({...f,options:[...(f.options||[])]}); }
+  function saveEdit(){ persist(dayFields.map(f=>f.id===editId?{...f,...editForm}:f)); setEditId(null); setEditForm(null); }
+
+  const active=dayFields.filter(f=>!f.archivedAt);
+  const archived=dayFields.filter(f=>f.archivedAt);
+
+  return (
+    <div>
+      <div style={{fontSize:11,color:"#4b5563",marginBottom:10}}>
+        Поля для ввода данных каждый день: самочувствие, сон, симптомы и т.д.
+      </div>
+      {active.map(f=>(
+        <div key={f.id} style={{marginBottom:8}}>
+          {editId===f.id&&editForm?(
+            <FieldForm form={editForm} setForm={setEditForm} onSave={saveEdit} onCancel={()=>setEditId(null)} saveLabel="Сохранить"/>
+          ):(
+            <div style={S.card}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <span style={{fontSize:20}}>{f.icon}</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,color:"#e2ddd6"}}>{f.label}</div>
+                  <div style={{fontSize:10,color:"#4b5563"}}>{DAY_FIELD_TYPES.find(t=>t.id===f.type)?.label}{f.unit?" · "+f.unit:""}</div>
+                </div>
+                <button onClick={()=>startEdit(f)} style={{...arrowBtn,fontSize:12}}>✏️</button>
+                <button onClick={()=>archiveField(f.id)} style={{...arrowBtn,color:"#f87171",border:"1px solid #991b1b",background:"#1a0000",fontSize:11}}>Архив</button>
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+      {showNew?(
+        <FieldForm form={newForm} setForm={setNewForm} onSave={addField} onCancel={()=>setShowNew(false)} saveLabel="Добавить поле"/>
+      ):(
+        <button onClick={()=>setShowNew(true)} style={{...S.saveBtn,marginBottom:10}}>+ Добавить поле</button>
+      )}
+      {archived.length>0&&(
+        <>
+          <div style={{fontSize:10,color:"#4b5563",marginTop:6,marginBottom:8,fontWeight:600,letterSpacing:"0.05em"}}>АРХИВ ПОЛЕЙ</div>
+          {archived.map(f=>(
+            <div key={f.id} style={{...S.card,marginBottom:8,opacity:0.6}}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <span style={{fontSize:20}}>{f.icon}</span>
+                <span style={{flex:1,fontSize:13,color:"#6b7280"}}>{f.label}</span>
+                <button onClick={()=>restoreField(f.id)} style={{...arrowBtn,color:"#4ade80",border:"1px solid #166534",background:"#052e16",fontSize:11}}>↩</button>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function HabitsSettings({habits, setHabits}){
+  const [showNew,setShowNew]=React.useState(false);
+  const [newLabel,setNewLabel]=React.useState("");
+  const [newIcon,setNewIcon]=React.useState(HABIT_ICONS[0]);
+  const [editId,setEditId]=React.useState(null);
+  const [editLabel,setEditLabel]=React.useState("");
+  const [editIcon,setEditIcon]=React.useState("");
+
+  function persist(next){ setHabits(next); save(SK_HABITS,next); }
+
+  function addHabit(){
+    if(!newLabel.trim()) return;
+    persist([...habits, { id:newHabitId(), label:newLabel.trim(), icon:newIcon, archivedAt:null }]);
+    setNewLabel(""); setNewIcon(HABIT_ICONS[0]); setShowNew(false);
+  }
+  function startEdit(h){ setEditId(h.id); setEditLabel(h.label); setEditIcon(h.icon); }
+  function saveEdit(id){
+    persist(habits.map(h=>h.id===id?{...h,label:editLabel,icon:editIcon}:h));
+    setEditId(null);
+  }
+  function archiveHabit(id){
+    persist(habits.map(h=>h.id===id?{...h,archivedAt:todayKey()}:h));
+  }
+  function restoreHabit(id){
+    persist(habits.map(h=>h.id===id?{...h,archivedAt:null}:h));
+  }
+
+  const active=habits.filter(h=>!h.archivedAt);
+  const archived=habits.filter(h=>h.archivedAt);
+
+  return (
+    <div>
+      <div style={{fontSize:11,color:"#4b5563",marginBottom:10}}>
+        Привычки-чекбоксы в дневном списке. Добавки управляются отдельно ниже.
+      </div>
+      {active.map(h=>(
+        <div key={h.id} style={{...S.card,marginBottom:8}}>
+          {editId===h.id?(
+            <>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+                {HABIT_ICONS.map(ic=>(
+                  <button key={ic} onClick={()=>setEditIcon(ic)} style={{fontSize:16,padding:"4px 8px",borderRadius:6,cursor:"pointer",background:editIcon===ic?"#1e1e28":"#0d0d12",border:`1px solid ${editIcon===ic?"#4ade80":"#1e1e28"}`}}>{ic}</button>
+                ))}
+              </div>
+              <input value={editLabel} onChange={e=>setEditLabel(e.target.value)} style={{...S.input,marginBottom:8}}/>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>saveEdit(h.id)} style={{...S.saveBtn,flex:1,padding:"9px 0",fontSize:12}}>Сохранить</button>
+                <button onClick={()=>setEditId(null)} style={{flex:1,padding:"9px 0",borderRadius:8,background:"#0d0d12",border:"1px solid #1e1e28",color:"#9ca3af",fontSize:12,cursor:"pointer"}}>Отмена</button>
+              </div>
+            </>
+          ):(
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <span style={{fontSize:20}}>{h.icon}</span>
+              <span style={{flex:1,fontSize:13,color:"#e2ddd6"}}>{h.label}</span>
+              <button onClick={()=>startEdit(h)} style={{...arrowBtn,fontSize:12}}>✏️</button>
+              <button onClick={()=>archiveHabit(h.id)} style={{...arrowBtn,color:"#f87171",border:"1px solid #991b1b",background:"#1a0000",fontSize:11}}>Архив</button>
+            </div>
+          )}
+        </div>
+      ))}
+
+      {showNew?(
+        <div style={S.card}>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+            {HABIT_ICONS.map(ic=>(
+              <button key={ic} onClick={()=>setNewIcon(ic)} style={{fontSize:16,padding:"4px 8px",borderRadius:6,cursor:"pointer",background:newIcon===ic?"#1e1e28":"#0d0d12",border:`1px solid ${newIcon===ic?"#4ade80":"#1e1e28"}`}}>{ic}</button>
+            ))}
+          </div>
+          <input value={newLabel} onChange={e=>setNewLabel(e.target.value)} style={{...S.input,marginBottom:8}} placeholder="Название привычки"/>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={addHabit} style={{...S.saveBtn,flex:1,padding:"9px 0",fontSize:12}}>Добавить</button>
+            <button onClick={()=>setShowNew(false)} style={{flex:1,padding:"9px 0",borderRadius:8,background:"#0d0d12",border:"1px solid #1e1e28",color:"#9ca3af",fontSize:12,cursor:"pointer"}}>Отмена</button>
+          </div>
+        </div>
+      ):(
+        <button onClick={()=>setShowNew(true)} style={{...S.saveBtn,marginBottom:10}}>+ Добавить привычку</button>
+      )}
+
+      {archived.length>0&&(
+        <>
+          <div style={{fontSize:10,color:"#4b5563",marginTop:6,marginBottom:8,fontWeight:600,letterSpacing:"0.05em"}}>АРХИВ ПРИВЫЧЕК</div>
+          {archived.map(h=>(
+            <div key={h.id} style={{...S.card,marginBottom:8,opacity:0.6}}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <span style={{fontSize:20}}>{h.icon}</span>
+                <span style={{flex:1,fontSize:13,color:"#6b7280"}}>{h.label}</span>
+                <span style={{fontSize:10,color:"#374151",marginRight:4}}>с {h.archivedAt}</span>
+                <button onClick={()=>restoreHabit(h.id)} style={{...arrowBtn,color:"#4ade80",border:"1px solid #166534",background:"#052e16",fontSize:11}}>↩</button>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ExportImportSettings({allData, setAllData}){
+  const [importError,setImportError]=React.useState("");
+  const [imported,setImported]=React.useState(false);
+
+  function exportAll(){
+    const bundle={
+      version:1,
+      exportedAt: new Date().toISOString(),
+      days:       load(SK_DAYS,{}),
+      supplements:load(SK_SUPPLEMENTS,[]),
+      habits:     load(SK_HABITS,[]),
+      schedule:   load(SK_SCHEDULE,[]),
+      scheduleHistory: load(SK_SCHEDULE_HISTORY,[]),
+      analyses:   load(SK_ANALYSES,[]),
+      measures:   load(SK_MEASURES,[]),
+      weights:    load(SK_WEIGHTS,[]),
+      nutrition:  load(SK_NUTRITION,{}),
+    };
+    const json=JSON.stringify(bundle,null,2);
+    const blob=new Blob([json],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    const date=new Date().toISOString().slice(0,10);
+    a.download=`tracker-backup-${date}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importAll(e){
+    const file=e.target.files[0];
+    if(!file) return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try{
+        const bundle=JSON.parse(ev.target.result);
+        if(!bundle.version||!bundle.days) throw new Error("Неверный формат файла");
+        if(bundle.days)       save(SK_DAYS,bundle.days);
+        if(bundle.supplements)save(SK_SUPPLEMENTS,bundle.supplements);
+        if(bundle.habits)     save(SK_HABITS,bundle.habits);
+        if(bundle.schedule)   save(SK_SCHEDULE,bundle.schedule);
+        if(bundle.scheduleHistory) save(SK_SCHEDULE_HISTORY,bundle.scheduleHistory);
+        if(bundle.analyses)   save(SK_ANALYSES,bundle.analyses);
+        if(bundle.measures)   save(SK_MEASURES,bundle.measures);
+        if(bundle.weights)    save(SK_WEIGHTS,bundle.weights);
+        if(bundle.nutrition)  save(SK_NUTRITION,bundle.nutrition);
+        setImportError("");
+        setImported(true);
+        setTimeout(()=>window.location.reload(),800);
+      } catch(err){
+        setImportError("Ошибка: "+err.message);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value="";
+  }
+
+  return (
+    <div>
+      <div style={S.card}>
+        <div style={{fontSize:13,color:"#e2ddd6",fontWeight:600,marginBottom:4}}>Экспорт данных</div>
+        <div style={{fontSize:11,color:"#4b5563",marginBottom:10}}>Скачает JSON со всеми данными трекера. Сохраните в iCloud Drive как резервную копию.</div>
+        <button onClick={exportAll} style={{...S.saveBtn}}>⬇ Скачать резервную копию</button>
+      </div>
+      <div style={S.card}>
+        <div style={{fontSize:13,color:"#e2ddd6",fontWeight:600,marginBottom:4}}>Импорт данных</div>
+        <div style={{fontSize:11,color:"#4b5563",marginBottom:10}}>Загрузите ранее скачанный JSON. Все текущие данные будут заменены.</div>
+        <label style={{...S.saveBtn,display:"block",textAlign:"center",cursor:"pointer"}}>
+          ⬆ Загрузить резервную копию
+          <input type="file" accept=".json" onChange={importAll} style={{display:"none"}}/>
+        </label>
+        {importError&&<div style={{fontSize:11,color:"#f87171",marginTop:8}}>{importError}</div>}
+        {imported&&<div style={{fontSize:11,color:"#4ade80",marginTop:8}}>Импорт успешен, перезагрузка...</div>}
+      </div>
+      <div style={S.card}>
+        <div style={{fontSize:13,color:"#e2ddd6",fontWeight:600,marginBottom:4}}>Добавить на экран iPhone</div>
+        <div style={{fontSize:11,color:"#6b7280",lineHeight:1.5}}>
+          1. Откройте файл в Safari{"\n"}
+          2. Нажмите кнопку «Поделиться» (□↑){"\n"}
+          3. Выберите «На экран "Домой"»{"\n"}
+          4. Нажмите «Добавить»{"\n\n"}
+          Данные в режиме PWA хранятся отдельно от кэша браузера и не удаляются автоматически.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsTab({supplements, setSupplements, habits, setHabits, dayFields, setDayFields, allData, setAllData}){
+  const [section,setSection]=React.useState("fields");
+
+  const sections=[
+    {id:"fields",  label:"Поля дня"},
+    {id:"habits",  label:"Привычки"},
+    {id:"supps",   label:"Добавки"},
+    {id:"export",  label:"Данные"},
+  ];
+
+  return (
+    <div style={{padding:"10px 14px 0"}}>
+      <div style={{display:"flex",background:"#0d0d12",borderRadius:10,padding:3,marginBottom:14,border:"1px solid #1e1e28",overflowX:"auto"}}>
+        {sections.map(s=>(
+          <button key={s.id} onClick={()=>setSection(s.id)} style={{
+            flex:"0 0 auto",padding:"9px 10px",background:section===s.id?"#1e1e28":"none",
+            border:"none",borderRadius:8,color:section===s.id?"#4ade80":"#4b5563",
+            fontSize:12,cursor:"pointer",fontWeight:section===s.id?600:400,whiteSpace:"nowrap",
+          }}>{s.label}</button>
+        ))}
+      </div>
+      {section==="fields"&&<DayFieldsSettings dayFields={dayFields} setDayFields={setDayFields}/>}
+      {section==="habits"&&<HabitsSettings habits={habits} setHabits={setHabits}/>}
+      {section==="supps"&&<SupplementsTab supplements={supplements} setSupplements={setSupplements}/>}
+      {section==="export"&&<ExportImportSettings allData={allData} setAllData={setAllData}/>}
+    </div>
+  );
+}
+
 const NAV=[
   {id:0,icon:"◉",label:"Сегодня"},
   {id:1,icon:"☰",label:"График"},
   {id:2,icon:"▦",label:"Календарь"},
   {id:3,icon:"↗",label:"Статистика"},
   {id:6,icon:"🍽",label:"Питание"},
-  {id:5,icon:"💊",label:"Добавки"},
   {id:4,icon:"≡",label:"Данные"},
 ];
 
@@ -1778,23 +2124,85 @@ function runMigrationV4Once(){
 }
 runMigrationV4Once();
 
+const SK_MIGRATED_V5 = "my_migrated_v5";
+
+function runMigrationV5Once(){
+  if(load(SK_MIGRATED_V5,false)) return;
+  const supps=load(SK_SUPPLEMENTS,null);
+  if(supps){
+    const filtered=supps.filter(s=>s.id!=="zinc");
+    save(SK_SUPPLEMENTS,filtered);
+  }
+  save(SK_MIGRATED_V5,true);
+}
+runMigrationV5Once();
+
+const SK_MIGRATED_V6 = "my_migrated_v6";
+
+function runMigrationV6Once(){
+  if(load(SK_MIGRATED_V6,false)) return;
+  if(!load(SK_HABITS,null)){
+    save(SK_HABITS, defaultHabits());
+  }
+  save(SK_MIGRATED_V6,true);
+}
+runMigrationV6Once();
+
+const SK_MIGRATED_V7 = "my_migrated_v7";
+
+function runMigrationV7Once(){
+  if(load(SK_MIGRATED_V7,false)) return;
+  if(!load(SK_DAY_FIELDS,null)){
+    save(SK_DAY_FIELDS, defaultDayFields());
+  }
+  save(SK_MIGRATED_V7,true);
+}
+runMigrationV7Once();
+
 function App(){
   const [tab,setTab]=React.useState(0);
+  const [showSettings,setShowSettings]=React.useState(false);
   const [data,setData]=React.useState(()=>load(SK_DAYS,{}));
   const [supplements,setSupplements]=React.useState(()=>load(SK_SUPPLEMENTS,defaultSupplements()));
+  const [habits,setHabits]=React.useState(()=>load(SK_HABITS,defaultHabits()));
+  const [dayFields,setDayFields]=React.useState(()=>load(SK_DAY_FIELDS,defaultDayFields()));
+
+  const headerTitle={0:"Сегодня",1:"График",2:"Календарь",3:"Статистика",4:"Данные",6:"Питание"}[tab]||"Трекер";
 
   return (
     <div style={S.app}>
-      {tab===0&&<TodayTab data={data} setData={setData} supplements={supplements}/>}
-      {tab===1&&<ScheduleTab/>}
-      {tab===2&&<CalendarTab data={data} supplements={supplements}/>}
-      {tab===3&&<StatsTab data={data} supplements={supplements}/>}
-      {tab===4&&<DataTab daysData={data} setDaysData={setData}/>}
-      {tab===5&&<SupplementsTab supplements={supplements} setSupplements={setSupplements}/>}
-      {tab===6&&<NutritionTab/>}
+      {/* шапка с кнопкой настроек */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"14px 14px 0"}}>
+        <div style={{...S.title,marginBottom:0}}>{showSettings?"НАСТРОЙКИ":headerTitle}</div>
+        <button onClick={()=>setShowSettings(s=>!s)} style={{
+          padding:"8px 14px",borderRadius:8,fontSize:12,cursor:"pointer",
+          background:showSettings?"#052e16":"#1e1e28",
+          border:`1px solid ${showSettings?"#166534":"#374151"}`,
+          color:showSettings?"#4ade80":"#9ca3af",
+        }}>{showSettings?"✕ Закрыть":"⚙️ Настройки"}</button>
+      </div>
+
+      {showSettings?(
+        <SettingsTab
+          supplements={supplements} setSupplements={setSupplements}
+          habits={habits} setHabits={setHabits}
+          dayFields={dayFields} setDayFields={setDayFields}
+          allData={data} setAllData={setData}
+        />
+      ):(
+        <>
+          {tab===0&&<TodayTab data={data} setData={setData} supplements={supplements} habits={habits} dayFields={dayFields}/>}
+          {tab===1&&<ScheduleTab/>}
+          {tab===2&&<CalendarTab data={data} supplements={supplements} habits={habits}/>}
+          {tab===3&&<StatsTab data={data} supplements={supplements} habits={habits}/>}
+          {tab===4&&<DataTab daysData={data} setDaysData={setData}/>}
+          {tab===6&&<NutritionTab/>}
+        </>
+      )}
+
       <nav style={S.nav}>
         {NAV.map(n=>(
-          <button key={n.id} onClick={()=>setTab(n.id)} style={S.navBtn(tab===n.id)}>
+          <button key={n.id} onClick={()=>{ setShowSettings(false); setTab(n.id); }} style={S.navBtn(!showSettings&&tab===n.id)}>
             <span style={{fontSize:20}}>{n.icon}</span>
             <span>{n.label}</span>
           </button>
