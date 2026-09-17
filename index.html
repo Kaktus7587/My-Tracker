@@ -39,8 +39,8 @@ if ('serviceWorker' in navigator) {
 }
 
 // ─── УВЕДОМЛЕНИЯ ────────────────────────────────────────────────────────────
-const NK = 'nt_notif_settings';
-const ND = 'nt_notif_last_scheduled';
+const NK = 'my_notif_settings';
+const ND = 'my_notif_last_scheduled';
 
 function loadNotifSettings() {
   try { const r = localStorage.getItem(NK); return r ? JSON.parse(r) : null; } catch { return null; }
@@ -96,7 +96,7 @@ function scheduleNotifications(settings) {
   }
 
   if (settings.backup?.enabled) {
-    const lastBackup = parseInt(localStorage.getItem('nt_last_backup') || '0');
+    const lastBackup = parseInt(localStorage.getItem('my_last_backup') || '0');
     const daysSince = (Date.now() - lastBackup) / (1000 * 60 * 60 * 24);
     if (daysSince >= 7) {
       setTimeout(() => {
@@ -141,10 +141,10 @@ async function requestAndSchedule(settings) {
 <div id="root"></div>
 <script type="text/babel">
 
-const SK_DAYS     = "nt_days";
-const SK_MEASURES = "nt_measures";
-const SK_ANALYSES = "nt_analyses";
-const SK_WEIGHTS  = "nt_weights";
+const SK_DAYS     = "my_days";
+const SK_MEASURES = "my_measures";
+const SK_ANALYSES = "my_analyses";
+const SK_WEIGHTS  = "my_weights";
 
 const HABITS = [
   { id: "sleep7",    label: "Сон 7+ ч",              icon: "😴" },
@@ -965,7 +965,7 @@ function NotificationsSettings(){
           const a=document.createElement("a");
           a.href=url; a.download=`tracker-backup-${todayKey()}.json`;
           document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-          localStorage.setItem('nt_last_backup', String(Date.now()));
+          localStorage.setItem('my_last_backup', String(Date.now()));
         }} style={S.saveBtn}>⬇ Скачать резервную копию (.json)</button>
       </div>
 
