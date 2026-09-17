@@ -712,7 +712,11 @@ function CalendarTab({data,supplements,habits}){
                   const subtitle=h.isSupplement?supplementSubtitle(h.supplement,selected):"";
                   return <span key={h.id} style={{padding:"4px 8px",borderRadius:6,fontSize:11,background:done?"#052e16":"#1a1a1a",color:done?"#4ade80":"#4b5563",border:`1px solid ${done?"#166534":"#1e1e28"}`}}>{h.icon} {h.label}{subtitle&&done?` (${subtitle})`:""}</span>;
                 })}
-                {selectedDay.fastCarbs!=null&&(()=>{const fc=FAST_CARBS[selectedDay.fastCarbs];return <span style={{padding:"4px 8px",borderRadius:6,fontSize:11,background:fc.bg,color:fc.color,border:`1px solid ${fc.border}`}}>🍭 {fc.label}</span>;})()}
+                {selectedDay.fastCarbs!=null&&(()=>{
+                  const fcVal=selectedDay.fastCarbs;
+                  const fc=typeof fcVal==="number"||(!isNaN(+fcVal)&&fcVal!=='')?FAST_CARBS[+fcVal]:null;
+                  return fc?<span style={{padding:"4px 8px",borderRadius:6,fontSize:11,background:fc.bg,color:fc.color,border:`1px solid ${fc.border}`}}>🍭 {fc.label}</span>:null;
+                })()}
               </div>
               <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
                 {selectedDay.mood!=null&&<div style={{background:"#0d0d12",borderRadius:8,padding:"7px 10px",textAlign:"center"}}><div style={{fontSize:18}}>{MOOD.find(m=>m.v==selectedDay.mood)?.l}</div><div style={{fontSize:9,color:"#4b5563"}}>настроение</div></div>}
