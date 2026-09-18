@@ -2392,7 +2392,30 @@ function App(){
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+class ErrorBoundary extends React.Component{
+  constructor(props){super(props);this.state={error:null};}
+  static getDerivedStateFromError(e){return {error:e};}
+  componentDidCatch(e,info){console.error("TRACKER ERROR:",e,info);}
+  render(){
+    if(this.state.error){
+      return (
+        <div style={{padding:20,background:"#1a0000",minHeight:"100dvh",color:"#f87171",fontFamily:"monospace"}}>
+          <div style={{fontSize:16,fontWeight:700,marginBottom:12,color:"#fca5a5"}}>⚠ Ошибка в приложении</div>
+          <div style={{fontSize:12,marginBottom:8,color:"#fca5a5"}}>Скопируй этот текст и отправь разработчику:</div>
+          <div style={{background:"#0d0d12",borderRadius:8,padding:12,fontSize:11,wordBreak:"break-all",lineHeight:1.6,border:"1px solid #991b1b"}}>
+            {String(this.state.error)}
+          </div>
+          <button onClick={()=>this.setState({error:null})} style={{marginTop:16,padding:"10px 20px",background:"#052e16",border:"1px solid #166534",borderRadius:8,color:"#4ade80",fontSize:13,cursor:"pointer",width:"100%"}}>
+            Попробовать снова
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<ErrorBoundary><App/></ErrorBoundary>);
 </script>
 </body>
 </html>
